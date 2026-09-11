@@ -1,0 +1,440 @@
+#!/usr/bin/python3
+# Copyright (c) 2026 Jan Hoon
+# SPDX-License-Identifier: MIT
+"""Collect Grok plan quotas; adapted from janhoon.agents."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+AGENT_ID = "grok"
+AGENT_NAME = "Grok"
+AUTH_HELP = "Run `grok login` to authenticate."
+PROBE_MIN_INTERVAL_SECONDS = 15
+XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+XAI_OAUTH_TOKEN_URL = "https://auth.x.ai/oauth2/token"
+XAI_CLI_USER_URL = "https://cli-chat-proxy.grok.com/v1/user"
+XAI_CLI_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+
+
+def grok_home() -> Path:
+  return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok")).expanduser()
+
+
+def cache_root() -> Path:
+  root = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "openusage"
+  root.mkdir(parents=True, exist_ok=True)
+  return root
+
+
+def number(value: Any) -> int:
+  try:
+    return max(0, round(float(value or 0)))
+  except (TypeError, ValueError):
+    return 0
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+  handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+  tmp = Path(tmp_name)
+  try:
+    with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+      handle.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+  except BaseException:
+    tmp.unlink(missing_ok=True)
+    raise
+
+
+def read_fresh_json(path: Path, max_age_seconds: float) -> dict[str, Any] | None:
+  if max_age_seconds <= 0 or not path.exists():
+    return None
+  try:
+    age = time.time() - path.stat().st_mtime
+    if 0 <= age <= max_age_seconds:
+      parsed = json.loads(path.read_text(encoding="utf-8"))
+      return parsed if isinstance(parsed, dict) else None
+  except Exception:
+    return None
+  return None
+
+
+def grok_auth_entry() -> dict[str, Any]:
+  auth = grok_home() / "auth.json"
+  if not auth.is_file():
+    return {}
+  try:
+    data = json.loads(auth.read_text(encoding="utf-8"))
+  except Exception:
+    return {}
+  if not isinstance(data, dict):
+    return {}
+  for value in data.values():
+    if isinstance(value, dict) and (value.get("key") or value.get("refresh_token")):
+      return value
+  return {}
+
+
+def parse_expiry(value: Any) -> float:
+  if value is None or value == "":
+    return 0.0
+  if isinstance(value, (int, float)):
+    seconds = float(value)
+    return seconds / 1000.0 if seconds > 10_000_000_000 else seconds
+  raw = str(value).strip()
+  if not raw:
+    return 0.0
+  try:
+    parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+      parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.timestamp()
+  except Exception:
+    return 0.0
+
+
+def grok_client_version() -> str:
+  try:
+    payload = json.loads((grok_home() / "version.json").read_text(encoding="utf-8"))
+    version = str(payload.get("version") or "").strip()
+    if version:
+      return version
+  except Exception:
+    pass
+  return "1.0.4"
+
+
+def usage_headers(token: str, user_id: str = "") -> dict[str, str]:
+  headers = {
+    "Authorization": "Bearer " + token,
+    "Accept": "application/json",
+    "X-XAI-Token-Auth": "xai-grok-cli",
+    "x-grok-client-version": grok_client_version(),
+    "x-grok-client-mode": "cli",
+  }
+  if user_id:
+    headers["x-userid"] = user_id
+  return headers
+
+
+def get_json(url: str, token: str, user_id: str = "") -> dict[str, Any]:
+  request = urllib.request.Request(url, method="GET", headers=usage_headers(token, user_id))
+  with urllib.request.urlopen(request, timeout=12) as response:
+    payload = json.loads(response.read().decode("utf-8", errors="replace"))
+  return payload if isinstance(payload, dict) else {}
+
+
+def cents_value(value: Any) -> int | None:
+  if isinstance(value, dict) and "val" in value:
+    try:
+      n = int(value.get("val") or 0)
+    except (TypeError, ValueError):
+      return None
+    return n if n >= 0 else None
+  return None
+
+
+def normalize_percent(value: Any) -> float:
+  # The Grok billing endpoint reports 0-100 percentages, including 1.0 for 1%.
+  try:
+    n = float(value)
+  except (TypeError, ValueError):
+    return -1.0
+  if n < 0:
+    return -1.0
+  return min(1.0, n / 100.0)
+
+
+def period_title(period_type: str) -> str:
+  text = period_type.lower()
+  if "month" in text:
+    return "Monthly"
+  if "week" in text or "day" in text:
+    return "Weekly"
+  if "hour" in text or "session" in text:
+    return "Session"
+  return "Weekly"
+
+
+def normalize_reset_at(value: Any) -> str:
+  raw = str(value or "").strip()
+  if raw == "":
+    return ""
+  try:
+    parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+      parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.isoformat()
+  except Exception:
+    return raw
+
+
+def limits_from_billing(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+  config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+  period = config.get("currentPeriod") if isinstance(config.get("currentPeriod"), dict) else {}
+  reset_at = normalize_reset_at(period.get("end") or config.get("billingPeriodEnd"))
+  title = period_title(str(period.get("type") or ""))
+  out: list[dict[str, Any]] = []
+
+  included = normalize_percent(config.get("creditUsagePercent"))
+  if included < 0:
+    used = cents_value(config.get("used"))
+    limit = cents_value(config.get("monthlyLimit"))
+    if used is not None and limit and limit > 0:
+      included = min(1.0, used / limit)
+      title = "Monthly"
+  if included >= 0:
+    out.append({
+      "label": f"{title} included",
+      "title": title,
+      "percent": included,
+      "resetsAt": reset_at,
+    })
+
+  # productUsage (Grok Build / Grok Chat) is a breakdown of the same weekly
+  # allowance, not a second quota. On-demand only appears when a real cap is set.
+  cap = cents_value(config.get("onDemandCap"))
+  used_cap = cents_value(config.get("onDemandUsed"))
+  if cap and cap > 0 and used_cap is not None:
+    out.append({
+      "label": "On-demand cap",
+      "title": "On-demand",
+      "percent": min(1.0, used_cap / cap),
+      "resetsAt": reset_at,
+    })
+
+  return out, str(payload.get("subscriptionTier") or "").strip()
+
+
+def refresh_access_token(refresh_token: str) -> tuple[str, str, float]:
+  body = urllib.parse.urlencode({
+    "grant_type": "refresh_token",
+    "refresh_token": refresh_token,
+    "client_id": XAI_OAUTH_CLIENT_ID,
+  }).encode("utf-8")
+  request = urllib.request.Request(
+    XAI_OAUTH_TOKEN_URL,
+    data=body,
+    method="POST",
+    headers={
+      "Accept": "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+  )
+  with urllib.request.urlopen(request, timeout=12) as response:
+    payload = json.loads(response.read().decode("utf-8", errors="replace"))
+  if not isinstance(payload, dict):
+    raise RuntimeError("refresh returned no token")
+  token = str(payload.get("access_token") or "").strip()
+  if not token:
+    raise RuntimeError("refresh returned no token")
+  new_refresh = str(payload.get("refresh_token") or refresh_token).strip()
+  expires_in = number(payload.get("expires_in")) or 3600
+  return token, new_refresh, time.time() + expires_in
+
+
+def token_cache_path() -> Path:
+  return cache_root() / "grok-oauth.json"
+
+
+def write_secret_json(path: Path, payload: dict[str, Any]) -> None:
+  handle_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+  tmp = Path(tmp_name)
+  try:
+    with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+      handle.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+  except BaseException:
+    tmp.unlink(missing_ok=True)
+    raise
+
+
+def cached_oauth() -> dict[str, Any]:
+  cached = read_fresh_json(token_cache_path(), float("inf")) or {}
+  return cached if isinstance(cached, dict) else {}
+
+
+def persist_refreshed_oauth(access_token: str, refresh_token: str, expires_at: float) -> None:
+  try:
+    write_secret_json(token_cache_path(), {
+      "accessToken": access_token,
+      "refreshToken": refresh_token,
+      "expiresAt": expires_at,
+    })
+  except Exception as exc:
+    print(f"omarchy-agent-usage-grok: could not cache refreshed token ({exc})", file=sys.stderr)
+
+
+def resolve_access_token(entry: dict[str, Any]) -> tuple[str, str]:
+  token = str(entry.get("key") or "").strip()
+  refresh = str(entry.get("refresh_token") or "").strip()
+  expires_at = parse_expiry(entry.get("expires_at"))
+  cached = cached_oauth()
+  cached_token = str(cached.get("accessToken") or "").strip()
+  cached_refresh = str(cached.get("refreshToken") or "").strip()
+  cached_expiry = float(cached.get("expiresAt") or 0)
+  if cached_token and cached_expiry > time.time() + 60:
+    return cached_token, ""
+  if token and (expires_at <= 0 or expires_at > time.time() + 60):
+    return token, ""
+  refresh = cached_refresh or refresh
+  if not refresh:
+    return token, "expired" if token else ""
+  try:
+    token, refresh, new_expiry = refresh_access_token(refresh)
+    persist_refreshed_oauth(token, refresh, new_expiry)
+    return token, ""
+  except Exception as exc:
+    print(f"omarchy-agent-usage-grok: token refresh failed ({type(exc).__name__})", file=sys.stderr)
+    return token, "expired"
+
+
+def probe_limits(token: str, user_id: str) -> dict[str, Any]:
+  try:
+    identity = get_json(XAI_CLI_USER_URL, token)
+    resolved_user = str(identity.get("userId") or user_id or "").strip()
+    billing = get_json(XAI_CLI_BILLING_URL, token, resolved_user)
+  except urllib.error.HTTPError as error:
+    if error.code in (401, 403):
+      return {"ok": False, "auth": True, "helpText": "xAI rejected the saved sign-in. Run `grok login` to refresh it."}
+    return {
+      "ok": False,
+      "helpText": f"xAI's usage endpoint returned status {error.code}.",
+    }
+  except Exception:
+    return {
+      "ok": False,
+      "transport": True,
+      "helpText": "Couldn't reach xAI's usage endpoint. Retrying shortly.",
+    }
+
+  limits, tier = limits_from_billing(billing)
+  if not limits:
+    return {"ok": False, "helpText": "xAI's usage endpoint returned no limits."}
+  return {"ok": True, "limits": limits, "tierLabel": tier}
+
+
+def limit_window_open(entry: dict[str, Any], now: dt.datetime) -> bool:
+  raw = str(entry.get("resetsAt") or "")
+  if raw == "":
+    return True
+  try:
+    resets_at = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+  except Exception:
+    return True
+  if resets_at.tzinfo is None:
+    resets_at = resets_at.replace(tzinfo=dt.timezone.utc)
+  return resets_at > now
+
+
+def usable_cached_limits(cached: dict[str, Any]) -> list[dict[str, Any]]:
+  entries = cached.get("limits")
+  if not isinstance(entries, list):
+    return []
+  now = dt.datetime.now(dt.timezone.utc)
+  return [entry for entry in entries if isinstance(entry, dict) and limit_window_open(entry, now)]
+
+
+def collect_limits(force: bool) -> dict[str, Any]:
+  result = {
+    "limits": [],
+    "tierLabel": "",
+    "usageStatusText": "",
+    "authHelpText": AUTH_HELP,
+  }
+  probe_cache = cache_root() / "grok-limits.json"
+  cached = read_fresh_json(probe_cache, float("inf")) or {}
+  fallback = usable_cached_limits(cached)
+  if cached.get("tierLabel"):
+    result["tierLabel"] = str(cached.get("tierLabel"))
+
+  entry = grok_auth_entry()
+  if not entry:
+    result["limits"] = fallback
+    result["usageStatusText"] = "Waiting for auth"
+    return result
+
+  token, token_state = resolve_access_token(entry)
+  if token == "" or token_state == "expired":
+    result["limits"] = fallback
+    result["usageStatusText"] = "Sign-in expired"
+    result["authHelpText"] = (
+      "Grok's saved sign-in expired"
+      + (" — showing the last known limits." if fallback else ".")
+      + " Run `grok login` to refresh it."
+    )
+    return result
+
+  fetched_at = number(cached.get("fetchedAtMs")) / 1000
+  if fallback and not force and time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
+    result["limits"] = fallback
+    result["authHelpText"] = ""
+    return result
+
+  probe = probe_limits(token, str(entry.get("user_id") or ""))
+  if probe.get("ok"):
+    result["limits"] = probe["limits"]
+    result["tierLabel"] = str(probe.get("tierLabel") or result["tierLabel"] or "xAI")
+    result["authHelpText"] = ""
+    try:
+      write_json(probe_cache, {
+        "fetchedAtMs": round(time.time() * 1000),
+        "limits": probe["limits"],
+        "tierLabel": result["tierLabel"],
+      })
+    except Exception as exc:
+      print(f"omarchy-agent-usage-grok: could not write limits cache ({exc})", file=sys.stderr)
+    return result
+
+  if probe.get("transport"):
+    result["retryAdvised"] = True
+  result["authHelpText"] = str(probe.get("helpText") or AUTH_HELP)
+  result["usageStatusText"] = "Refresh failed"
+  if fallback:
+    result["limits"] = fallback
+  else:
+    result["usageStatusText"] = "Grok limits unavailable"
+    result["authHelpText"] = str(probe.get("helpText") or AUTH_HELP)
+  return result
+
+
+def main() -> int:
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--force", action="store_true")
+  parser.add_argument("--limits-only", action="store_true")
+  args = parser.parse_args()
+
+  limits = collect_limits(args.force)
+
+  record = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+    "ready": bool(limits["limits"]),
+    "tierLabel": limits["tierLabel"] or ("xAI" if grok_auth_entry() else ""),
+    "usageStatusText": limits["usageStatusText"],
+    "authHelpText": limits["authHelpText"],
+    "limits": limits["limits"],
+  }
+  if limits.get("retryAdvised"):
+    record["retryAdvised"] = True
+  print(json.dumps(record, separators=(",", ":"), sort_keys=True))
+  return 0
+
+
+if __name__ == "__main__":
+  raise SystemExit(main())
