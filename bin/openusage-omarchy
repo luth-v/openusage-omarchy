@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Launcher: the only executable entry. -B keeps bytecode out of the tree.
+set -euo pipefail
+launcher=$(readlink -f -- "${BASH_SOURCE[0]}")
+root=$(cd -- "$(dirname -- "$launcher")/.." && pwd)
+exec python3 -B "$root/lib/openusage_omarchy/__main__.py" "$@"

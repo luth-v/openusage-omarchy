@@ -1,0 +1,16 @@
+[
+  {"detected": {"claude": true, "ollama": true}, "layout": null,
+   "enabled": ["claude"]},
+  {"detected": {}, "layout": null,
+   "enabled": ["claude", "codex", "cursor"]},
+  {"detected": {"codex": true},
+   "layout": {"schema": "openusage-omarchy.layout.v1", "firstRunCompleted": true,
+              "order": ["claude", "codex", "ollama"],
+              "cards": {"claude": {"enabled": false}, "codex": {"enabled": true},
+                        "ollama": {"enabled": true}}},
+   "enabled": ["codex", "ollama"]},
+  {"detected": {"codex": true},
+   "layout": {"schema": "openusage-omarchy.layout.v1", "firstRunCompleted": false,
+              "cards": {"claude": {"enabled": true}, "codex": {"enabled": false}}},
+   "enabled": ["codex"]}
+]

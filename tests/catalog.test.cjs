@@ -1,0 +1,31 @@
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const m = vm.createContext({});
+vm.runInContext(fs.readFileSync('js/Catalog.js', 'utf8'), m);
+const norm = (x) => JSON.parse(JSON.stringify(x));
+const catalog = JSON.parse(fs.readFileSync('catalog.json', 'utf8'));
+assert.equal(m.SCHEMA, 'openusage-omarchy.catalog.v1');
+// Order matches ProviderCatalog.swift order (catalog_test.py pins it too).
+assert.deepEqual(norm(m.providerIds(catalog)), ['claude', 'codex', 'cursor', 'antigravity', 'copilot', 'devin', 'grok', 'ollama', 'opencode', 'openrouter', 'zai']);
+assert.equal(m.provider(catalog, 'claude').displayName, 'Claude');
+assert.equal(m.provider(catalog, 'nope'), null);
+assert.equal(m.metricDef(catalog, 'claude', 'session').kind, 'progress');
+assert.equal(m.metricDef(catalog, 'claude', 'nope'), null);
+assert.equal(m.familyOf('claude'), 'claude');
+assert.equal(m.familyOf('claude:abc123'), 'claude');
+assert.deepEqual(norm(m.spendFamilies(catalog)),
+  ['claude', 'codex', 'cursor', 'antigravity', 'grok', 'opencode']);
+assert.deepEqual(norm(m.defaultStars(catalog, 'claude')), ['session', 'weekly']);
+assert.deepEqual(norm(m.defaultStars(catalog, 'copilot')), ['premium']);
+assert.ok(m.defaultStars(catalog, 'grok').length <= 2);
+assert.deepEqual(norm(m.defaultDisabled(catalog, 'claude')), ['sonnet']);
+assert.deepEqual(norm(m.defaultDisabled(catalog, 'cursor').sort()), ['credits', 'requests']);
+assert.ok(m.defaultAlwaysVisible(catalog, 'claude').includes('session'));
+assert.ok(!m.defaultAlwaysVisible(catalog, 'claude').includes('sonnet'));
+assert.equal(m.displayName(catalog, 'zai'), 'Z.ai');
+assert.equal(m.metricLabelFor(catalog, 'claude', 'extra'), 'Extra usage spent');
+assert.equal(m.isStarrable(catalog, 'claude', 'trend'), false);
+assert.equal(m.isStarrable(catalog, 'claude', 'session'), true);
+assert.equal(m.providers(null).length, 0);
+console.log('Catalog tests passed');

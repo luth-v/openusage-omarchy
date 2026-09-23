@@ -1,15 +1,17 @@
 {
   "schemaVersion": 1,
-  "id": "luth-v.openusage",
+  "id": "luth-v.openusage-omarchy",
   "name": "OpenUsage",
   "version": "0.1.0",
   "author": "luth-v",
   "license": "MIT",
   "description": "Plan quotas for coding Providers",
   "kinds": [
+    "service",
     "bar-widget"
   ],
   "entryPoints": {
+    "service": "Service.qml",
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
@@ -19,49 +21,23 @@
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
-      "refreshIntervalSec": 300,
-      "display": "Used",
-      "resetStyle": "countdown",
-      "providers": {
-        "claude": {
-          "enabled": true
-        },
-        "codex": {
-          "enabled": true
-        },
-        "cursor": {
-          "enabled": true
-        },
-        "opencode": {
-          "enabled": true
-        },
-        "grok": {
-          "enabled": true
-        }
-      },
-      "stars": {},
-      "order": ["claude", "codex", "cursor", "opencode", "grok"]
-    },
-    "schema": [
-      {
-        "key": "refreshIntervalSec",
-        "type": "integer",
-        "label": "Refresh interval (seconds)",
-        "min": 30,
-        "max": 3600,
-        "step": 30,
-        "defaultValue": 300
-      },
-      {
-        "key": "display",
-        "type": "enum",
-        "label": "Display",
-        "options": [
-          "Used",
-          "Left"
-        ],
-        "defaultValue": "Used"
-      }
-    ]
+      "display": "Left",
+      "style": "Text",
+      "resetDisplay": "Countdown",
+      "alwaysShowPacing": false,
+      "density": "Default",
+      "timeFormat": "Auto",
+      "showTotalSpend": true,
+      "reduceAnimations": false,
+      "notifyAlmostOut": false,
+      "notifyCuttingClose": false,
+      "notifyWillRunOut": false,
+      "updateAuto": true,
+      "betaUpdates": false,
+      "updateWithOmarchy": false,
+      "logLevel": "Info",
+      "shortcut": "",
+      "codexFallbackModel": ""
+    }
   }
 }

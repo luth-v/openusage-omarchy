@@ -3,180 +3,252 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui as Ui
-import "Model.js" as Model
+import "qml" as Q
+import "js/Strip.js" as Strip
+import "js/Format.js" as Format
 
+// Final strip: user Stars in Text or Bars style over service state.
 Ui.BarWidget {
     id: root
-    moduleName: "luth-v.openusage"
-    property var records: ({})
-    property double now: Date.now()
-    property double nextUpdate: Date.now()
-    property bool queued: false
-    property bool queuedForce: false
-    property string refreshError: ""
-    property color warningColor: Color.accent
-    readonly property string display: setting("display", "Used")
-    readonly property string resetStyle: setting("resetStyle", "countdown")
-    readonly property var stars: setting("stars", {})
-    readonly property var providerSettings: setting("providers", {})
-    readonly property var order: setting("order", [])
-    readonly property int refreshSeconds: Math.max(30, Math.min(3600, Number(setting("refreshIntervalSec", 300)) || 300))
-    readonly property var orderedProviders: Model.ordered(order)
-    readonly property var enabledProviders: orderedProviders.filter(function(p) { return root.providerEnabled(p.id); })
-    readonly property var numberedProviders: enabledProviders.filter(function(p) {
-        return Model.percents(root.records[p.id], root.stars[p.id], root.display) !== "";
-    })
-    readonly property var stripProviders: numberedProviders.length ? numberedProviders : enabledProviders
-    readonly property bool refreshing: updater.running
+    moduleName: "luth-v.openusage-omarchy"
+    readonly property var service: bar && bar.shell && typeof bar.shell.serviceFor === "function" ? bar.shell.serviceFor(moduleName) : null
+    readonly property var feed: service ? service.state : null
+    readonly property var layout: service ? service.layout : null
+    readonly property var catalog: service ? service.catalog : null
+    readonly property string display: setting("display", "Left")
+    readonly property string resetDisplay: setting("resetDisplay", "Countdown")
+    readonly property string style: setting("style", "Text")
+    readonly property var strip: Strip.build(root.layout, root.catalog, root.feed, root.display, Format)
+    readonly property bool serviceMissing: !service
+    readonly property bool daemonDown: service && !service.daemonUp
+    readonly property bool showBars: root.style === "Bars" && root.strip.bars.length > 0
+    readonly property var barsGeo: Strip.barsLayout(Style.space(18), Math.max(1, root.strip.bars.length))
     readonly property color markSurface: bar ? bar.background : Color.background
-    readonly property string tooltip: enabledProviders.map(function(p) {
-        return Model.metrics(root.records[p.id], root.stars[p.id]).map(function(l) {
-            return p.name + " · " + l.title + " · " + Model.percent(l.percent, root.display) + " " + root.display + " · " + Model.countdown(l.resetsAt, root.now);
-        }).join("\n");
-    }).filter(function(s) { return s !== ""; }).join("\n") || "OpenUsage · Click for Dashboard" 
-    readonly property bool opened: (dashboard.item && dashboard.item.opened) || (customize.item && customize.item.opened) || false
-    readonly property bool popoutSwitchClosing: (dashboard.item && dashboard.item.popoutSwitchClosing) || (customize.item && customize.item.popoutSwitchClosing) || false
-    readonly property real openPanelIndicatorWidth: strip.implicitWidth
-    readonly property real openPanelIndicatorHeight: Style.space(10)
+    readonly property var manifestDefaults: manifestData.value || {}
+    readonly property string tooltip: {
+        if (root.serviceMissing)
+            return "OpenUsage · enable the service in shell.json plugins[]";
+        if (root.daemonDown)
+            return "OpenUsage · service not running";
+        return root.strip.accessibilityText || "OpenUsage · waiting for first refresh";
+    }
 
-    function providerEnabled(id) { return !providerSettings[id] || providerSettings[id].enabled !== false; }
-    function enabled(id) { return providerEnabled(id); }
     function persist(key, value) {
         var entry = {id: root.moduleName};
-        for (var existing in root.settings) if (existing !== "id") entry[existing] = root.settings[existing];
+        for (var existing in root.settings)
+            if (existing !== "id")
+                entry[existing] = root.settings[existing];
         entry[key] = value;
+        root.writeEntry(entry);
+    }
+    function writeEntry(entry) {
         root.settings = entry;
         if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
             root.bar.shell.updateEntryInline(root.moduleName, entry);
     }
-    function toggleDisplay() { persist("display", display === "Used" ? "Left" : "Used"); }
-    function toggleReset() { persist("resetStyle", resetStyle === "countdown" ? "exact" : "countdown"); }
-    function toggleProvider(id) {
-        var providers = Object.assign({}, providerSettings);
-        providers[id] = Object.assign({}, providers[id] || {}, {enabled: !enabled(id)});
-        persist("providers", providers);
+    function resetSettingsToDefaults() {
+        var entry = {id: root.moduleName};
+        for (var key in root.manifestDefaults)
+            entry[key] = root.manifestDefaults[key];
+        root.writeEntry(entry);
     }
-    function toggleStar(id, label) {
-        var chosen = Object.assign({}, stars);
-        if (chosen[id] === label) delete chosen[id]; else chosen[id] = label;
-        persist("stars", chosen);
+    function toggleDisplay() {
+        persist("display", display === "Used" ? "Left" : "Used");
     }
-    function moveProvider(id, delta) {
-        persist("order", Model.move(order, id, delta));
+    function toggleResetDisplay() {
+        persist("resetDisplay", resetDisplay === "Countdown" ? "Exact Time" : "Countdown");
     }
-    function acceptRecord(id, raw) {
-        var record = Model.parse(raw, id);
-        if (!record) return;
-        var copy = Object.assign({}, records);
-        copy[id] = record;
-        records = copy;
-    }
-    function refresh(force) {
-        if (updater.running) { queued = true; queuedForce = queuedForce || force; return; }
-        nextUpdate = Date.now() + refreshSeconds * 1000;
-        updater.command = [decodeURIComponent(Qt.resolvedUrl("bin/openusage-update").toString().replace(/^file:\/\//, "")), force ? "--force" : "--limits-only"];
-        updater.running = true;
+    function refresh() {
+        if (service)
+            service.refresh(true);
     }
     function open() {
-        if (customize.item) customize.item.close();
-        if (dashboard.item) dashboard.item.open();
-    }
-    function openCustomize() {
-        if (dashboard.item) dashboard.item.close();
-        if (customize.item) customize.item.open();
+        dashboard.active = true;
+        if (dashboard.item)
+            dashboard.item.open();
     }
     function close() {
-        if (dashboard.item) dashboard.item.close();
-        if (customize.item) customize.item.close();
+        if (dashboard.item)
+            dashboard.item.close();
     }
-    function closeForPopoutSwitch() {
-        if (dashboard.item) dashboard.item.closeForPopoutSwitch();
-        if (customize.item) customize.item.closeForPopoutSwitch();
+    function toggle() {
+        dashboard.active = true;
+        if (dashboard.item)
+            dashboard.item.toggle();
     }
-    function injectPanels() {
-        [dashboard.item, customize.item].forEach(function(p) {
-            if (!p) return;
-            p.bar = root.bar; p.hostWidget = root; p.anchorItem = button;
-        });
+    function openCustomize(cardId) {
+        if (dashboard.item)
+            dashboard.item.close();
+        if (settings.item)
+            settings.item.close();
+        customize.active = true;
+        if (customize.item) {
+            customize.item.openCard(cardId || "");
+            customize.item.open();
+        }
     }
-    onBarChanged: injectPanels()
-    onRefreshSecondsChanged: nextUpdate = Date.now() + refreshSeconds * 1000
+    function openSettings() {
+        if (dashboard.item)
+            dashboard.item.close();
+        if (customize.item)
+            customize.item.close();
+        settings.active = true;
+        if (settings.item)
+            settings.item.open();
+    }
+    function openDashboard() {
+        if (customize.item)
+            customize.item.close();
+        if (settings.item)
+            settings.item.close();
+        dashboard.active = true;
+        if (dashboard.item)
+            dashboard.item.open();
+    }
+
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
-    Component.onCompleted: refresh(false)
-
-    Timer {
-        interval: 1000; repeat: true; running: true
-        onTriggered: {
-            root.now = Date.now();
-            if (root.now >= root.nextUpdate && !updater.running) root.refresh(false);
+    Loader {
+        id: dashboard
+        active: false
+        source: "qml/Dashboard.qml"
+        onLoaded: {
+            item.hostWidget = root;
+            item.anchorItem = button;
+            item.bar = root.bar;
         }
     }
-    Process {
-        id: updater
-        onExited: function(code, status) {
-            root.refreshError = code === 0 ? "" : "A collector failed. Last known quotas are retained.";
-            if (root.queued) {
-                var force = root.queuedForce;
-                root.queued = false; root.queuedForce = false;
-                Qt.callLater(function() { root.refresh(force); });
-            }
+    Loader {
+        id: customize
+        active: false
+        source: "qml/Customize.qml"
+        onLoaded: {
+            item.hostWidget = root;
+            item.anchorItem = button;
+            item.bar = root.bar;
         }
+    }
+    Loader {
+        id: settings
+        active: false
+        source: "qml/Settings.qml"
+        onLoaded: {
+            item.hostWidget = root;
+            item.anchorItem = button;
+            item.bar = root.bar;
+        }
+    }
+    QtObject {
+        id: manifestData
+        property var value: null
     }
     FileView {
-        path: Color.currentThemePath + "/colors.toml"
-        watchChanges: true
-        onFileChanged: reload()
-        onLoaded: root.warningColor = Model.themeWarning(text(), Color.accent)
-    }
-    Instantiator {
-        model: Model.providers
-        delegate: QtObject {
-            required property var modelData
-            property FileView view: FileView {
-                path: Quickshell.env("HOME") + "/.local/state/openusage/" + modelData.id + ".json"
-                watchChanges: true
-                onFileChanged: reload()
-                onLoaded: root.acceptRecord(modelData.id, text())
+        path: decodeURIComponent(Qt.resolvedUrl("./manifest.json").toString().replace(/^file:\/\//, ""))
+        onLoaded: {
+            try {
+                manifestData.value = JSON.parse(text()).barWidget.defaults || {};
+            } catch (_) {
+                manifestData.value = {};
             }
         }
     }
-    Loader { id: dashboard; source: Qt.resolvedUrl("Dashboard.qml"); visible: false; onLoaded: root.injectPanels() }
-    Loader { id: customize; source: Qt.resolvedUrl("Customize.qml"); visible: false; onLoaded: root.injectPanels() }
     IpcHandler {
-        target: "luth-v.openusage"
+        target: "luth-v.openusage-omarchy"
         function open(): void { root.open(); }
         function close(): void { root.close(); }
+        function toggle(): void { root.toggle(); }
         function customize(): void { root.openCustomize(); }
-        function refresh(): void { root.refresh(true); }
+        function settings(): void { root.openSettings(); }
+        function refresh(): void { root.refresh(); }
     }
     Grid {
-        id: strip
+        id: stripGrid
+        visible: !root.showBars
         anchors.centerIn: parent
-        rows: root.vertical ? Math.max(1, root.stripProviders.length) : 1
-        columns: root.vertical ? 1 : Math.max(1, root.stripProviders.length)
+        rows: root.vertical ? Math.max(1, root.strip.groups.length) : 1
+        columns: root.vertical ? 1 : Math.max(1, root.strip.groups.length)
         rowSpacing: Style.space(4)
-        columnSpacing: Style.space(8)
+        columnSpacing: Style.space(11)
         Repeater {
-            model: root.stripProviders
+            model: root.strip.groups
             delegate: Row {
                 required property var modelData
                 spacing: Style.space(4)
-                height: Style.space(16)
-                ProviderMark {
-                    providerId: modelData.id
+                height: Math.max(mark.height, values.height)
+                Q.ProviderMark {
+                    id: mark
+                    providerId: modelData.family
                     surface: root.markSurface
                     fallbackColor: button.foreground
                     size: Style.space(14)
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 Text {
-                    visible: text !== ""
-                    text: Model.percents(root.records[modelData.id], root.stars[modelData.id], root.display)
+                    id: single
+                    visible: modelData.metrics.length <= 1
+                    text: modelData.metrics.length > 0 ? modelData.metrics[0].value : ""
                     color: button.foreground
                     font.family: button.fontFamily
-                    font.pixelSize: Style.font.bodySmall
+                    font.pixelSize: Style.font.body
+                    font.bold: true
                     anchors.verticalCenter: parent.verticalCenter
+                }
+                Column {
+                    id: values
+                    visible: modelData.metrics.length > 1
+                    spacing: -2
+                    anchors.verticalCenter: parent.verticalCenter
+                    Repeater {
+                        model: modelData.metrics
+                        delegate: Text {
+                            required property var modelData
+                            text: modelData.value
+                            color: button.foreground
+                            font.family: button.fontFamily
+                            font.pixelSize: Style.font.bodySmall
+                            font.weight: 600
+                            anchors.right: parent.right
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Item {
+        id: barsGlyph
+        visible: root.showBars
+        anchors.centerIn: parent
+        width: root.barsGeo.side
+        height: root.barsGeo.side
+        Repeater {
+            model: root.strip.bars
+            delegate: Item {
+                required property var modelData
+                required property int index
+                readonly property var fill: Strip.fill(root.barsGeo.trackW, modelData.fraction)
+                x: root.barsGeo.trackX
+                y: root.barsGeo.yOffset + index * (root.barsGeo.trackH + root.barsGeo.gap)
+                width: root.barsGeo.trackW
+                height: root.barsGeo.trackH
+                Rectangle {
+                    anchors.fill: parent
+                    radius: root.barsGeo.rx
+                    color: Qt.alpha(button.foreground, 0.16)
+                }
+                Rectangle {
+                    visible: fill.fillW > 0
+                    width: fill.fillW
+                    height: parent.height
+                    radius: root.barsGeo.rx
+                    color: button.foreground
+                }
+                Rectangle {
+                    visible: fill.fillW > 0 && fill.remainderW > 0 && fill.dividerX !== null
+                    x: fill.dividerX
+                    width: fill.remainderW
+                    height: parent.height
+                    radius: root.barsGeo.rx
+                    color: Qt.alpha(button.foreground, 0.24)
                 }
             }
         }
@@ -185,16 +257,19 @@ Ui.BarWidget {
         id: button
         anchors.fill: parent
         bar: root.bar
-        labelVisible: root.stripProviders.length === 0
+        labelVisible: root.strip.isEmpty
         text: "OpenUsage"
         tooltipText: root.tooltip
         horizontalMargin: 8.75
-        fixedWidth: root.vertical || root.stripProviders.length === 0 ? -1 : strip.implicitWidth + Style.spaceReal(8.75) * 2
-        fixedHeight: root.vertical && root.stripProviders.length > 0 ? strip.implicitHeight + Style.spaceReal(6) * 2 : -1
+        fixedWidth: root.vertical || root.strip.isEmpty ? -1 : (root.showBars ? barsGlyph.width : stripGrid.implicitWidth) + Style.spaceReal(8.75) * 2
+        fixedHeight: root.vertical && !root.strip.isEmpty ? (root.showBars ? barsGlyph.height : stripGrid.implicitHeight) + Style.spaceReal(6) * 2 : -1
         onPressed: function(b) {
-            if (b === Qt.MiddleButton) root.refresh(true);
-            else if (b === Qt.RightButton) root.openCustomize();
-            else if (dashboard.item && dashboard.item.opened) root.close(); else root.open();
+            if (b === Qt.MiddleButton)
+                root.refresh();
+            else if (b === Qt.RightButton)
+                root.openCustomize();
+            else
+                root.toggle();
         }
     }
 }

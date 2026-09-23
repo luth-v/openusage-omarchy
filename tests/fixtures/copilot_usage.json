@@ -1,0 +1,1 @@
+{"copilot_plan": "pro", "quota_reset_date": "2026-10-01T00:00:00Z", "quota_snapshots": {"chat": {"entitlement": -1, "remaining": -1}, "completions": {"entitlement": -1, "remaining": -1}, "premium_interactions": {"entitlement": 1000, "overage_count": 5, "overage_permitted": true, "percent_remaining": 60, "remaining": 600}}}

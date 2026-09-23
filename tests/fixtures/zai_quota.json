@@ -1,0 +1,1 @@
+{"data": {"limits": [{"nextResetTime": 1788393600000, "number": 5, "percentage": 60.0, "type": "CREDIT_LIMIT", "unit": 3}, {"nextResetTime": 1788998400000, "number": 1, "percentage": 20.0, "type": "CREDIT_LIMIT", "unit": 6}, {"currentValue": 12, "nextResetTime": 1790812800000, "type": "TIME_LIMIT", "usage": 100}]}, "success": true}

@@ -1,0 +1,1 @@
+{"accounts": [{"alias": "work", "home": "/tmp/ou-work-codex", "identity": {"accountId": "test-only-acct-2", "email": "work@example.com"}, "number": 1}], "mainHome": "/tmp/ou-main-codex", "schemaVersion": 1}
