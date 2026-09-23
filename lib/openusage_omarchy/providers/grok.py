@@ -176,7 +176,6 @@ def _headers(token: str) -> dict[str, str]:
         "Authorization": "Bearer " + token.strip(),
         "X-XAI-Token-Auth": "xai-grok-cli",
         "Accept": "application/json",
-        "User-Agent": "OpenUsage",
     }
 
 
@@ -378,15 +377,19 @@ def _probe(env: Env, card: model.CardRef, candidate: Candidate) -> model.Snapsho
         settings = None
     if settings is not None and 200 <= settings.status < 300:
         plan = plan_from_settings(settings.body)
-    snap = model.Snapshot(card=card, plan=plan, fetched_at=iso_now(env), metrics=metrics)
-    return _with_spend(card, env, snap, env.clock.now())
+    return model.Snapshot(card=card, plan=plan, fetched_at=iso_now(env), metrics=metrics)
 
 
 NOTE = "From your Grok logs (estimated)"
 
 
-def _with_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
-                now: dt.datetime) -> model.Snapshot:
+def attach_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
+                 now: dt.datetime) -> model.Snapshot:
+    """Spend tiles for a quota snapshot. Never raises; quota wins on failure.
+
+    Runs after the quota batch publishes (see engine.refresh.attach_spend),
+    priced from the cached store while it revalidates in the background.
+    """
     try:
         pricing = _spend_ctx.load_pricing(env)
         stamp = _spend_ctx.since_ts(env)

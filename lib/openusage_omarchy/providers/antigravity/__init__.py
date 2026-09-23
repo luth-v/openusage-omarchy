@@ -198,14 +198,17 @@ def fetch(card: model.CardRef, env: Env) -> model.Snapshot:
         local = _probe_ls(env, "agy", [], "", None)
     if local is not None:
         plan, metrics = local
-        snap = model.Snapshot(card=card, plan=plan, fetched_at=iso_now(env), metrics=metrics)
-        return _with_spend(card, env, snap, env.clock.now())
-    snap = _probe_cloud(card, env)
-    return _with_spend(card, env, snap, env.clock.now())
+        return model.Snapshot(card=card, plan=plan, fetched_at=iso_now(env), metrics=metrics)
+    return _probe_cloud(card, env)
 
 
-def _with_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
-                now: dt.datetime) -> model.Snapshot:
+def attach_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
+                 now: dt.datetime) -> model.Snapshot:
+    """Spend tiles for a quota snapshot. Never raises; quota wins on failure.
+
+    Runs after the quota batch publishes (see engine.refresh.attach_spend),
+    priced from the cached store while it revalidates in the background.
+    """
     try:
         pricing = _spend_ctx.load_pricing(env)
         stamp = _spend_ctx.since_ts(env)

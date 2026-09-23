@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import sys
 
 from . import atomic, catalog, layout as _layout, log, model, paths, proxy as _proxy
@@ -91,6 +92,7 @@ def run(argv: list[str], env: Env | None = None) -> int:
     batch = _refresh.refresh(
         collectors, live, session_id, force=force, families=families,
         enabled_ids=enabled_ids if wanted is None else {card.card_id for card in matched})
+    batch = _refresh.attach_spend(batch, collectors, live, session_id)
     snapshots: dict[str, model.Snapshot] = {}
     errors: dict[str, model.ErrorInfo] = {}
     for item in batch.results:
@@ -105,7 +107,9 @@ def run(argv: list[str], env: Env | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.umask(0o077)
     dirs = paths.Paths.from_env()
+    paths.harden(dirs)
     log.setup("info", dirs.log_file)
     try:
         return run(list(sys.argv[1:] if argv is None else argv))

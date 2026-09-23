@@ -90,6 +90,7 @@ class Daemon:
         self.in_flight: list[str] = []
         self.next_at: dt.datetime | None = None
         self.last_batch: _refresh.Batch | None = None
+        self._spend_threads: list[threading.Thread] = []
         self._last_claims: dict[str, dict] = {}
         self._commands: "queue.Queue[commands.Command | None]" = queue.Queue()
         self._state_lock = threading.Lock()
@@ -254,22 +255,87 @@ class Daemon:
             self.in_flight = sorted(cid for cid in enabled
                                     if families is None or model.family_of(cid) in families)
             self._write_state()
-        batch = _refresh.refresh(
-            self.collectors, self.env, self.session_id, force=force,
-            families=families, enabled_ids=enabled
-        )
-        with self._state_lock:
-            # A family-scoped batch merges into the previous one; other
-            # providers keep their last-good rows instead of blanking.
-            if families is not None and self.last_batch is not None:
-                batch = _refresh.merge_batches(self.last_batch, batch)
-            self.last_batch = batch
-            self.in_flight = []
-            if families is None:
-                self.next_at = _utcnow() + dt.timedelta(seconds=REFRESH_INTERVAL_S)
-            self.codex_options = self._load_codex_options()
-            self._notify_pass(batch)
-            self._write_state()
+        try:
+            batch = _refresh.refresh(
+                self.collectors, self.env, self.session_id, force=force,
+                families=families, enabled_ids=enabled
+            )
+        except Exception as exc:  # the batch must always settle below
+            self._log.warning("refresh batch failed: %s", type(exc).__name__)
+            batch = None
+        try:
+            with self._state_lock:
+                # A family-scoped batch merges into the previous one; other
+                # providers keep their last-good rows instead of blanking.
+                if batch is not None:
+                    if families is not None and self.last_batch is not None:
+                        batch = _refresh.merge_batches(self.last_batch, batch)
+                    self.last_batch = batch
+                elif families is None and self.last_batch is None:
+                    now = _utcnow()
+                    self.last_batch = _refresh.Batch(
+                        generation=0, results=[], started_at=now,
+                        ended_at=now)
+                self.in_flight = []
+                if families is None:
+                    self.next_at = _utcnow() + dt.timedelta(
+                        seconds=REFRESH_INTERVAL_S)
+                try:
+                    self.codex_options = self._load_codex_options()
+                except Exception as exc:
+                    self._log.warning("codex options failed: %s",
+                                      type(exc).__name__)
+                if batch is not None:
+                    try:
+                        self._notify_pass(batch)
+                    except Exception as exc:
+                        self._log.warning("notify pass failed: %s",
+                                          type(exc).__name__)
+        finally:
+            # Quota publishes first, on every path including timeouts and
+            # failures: inFlight clears and the schedule advances here.
+            with self._state_lock:
+                try:
+                    self._write_state()
+                except Exception as exc:
+                    self._log.warning("state publish failed: %s",
+                                      type(exc).__name__)
+                paths.harden_runtime_files(self.dirs)
+        if batch is not None:
+            self._spawn_spend_attach(batch)
+
+    def _spawn_spend_attach(self, batch: _refresh.Batch) -> threading.Thread:
+        """Enrich a published batch with spend tiles in the background.
+
+        Slow scans attach when ready through a second publish. A batch
+        superseded by a newer one is dropped: its successor re-attaches.
+        Returns the thread so tests can join it.
+        """
+        def _work() -> None:
+            try:
+                enriched = _refresh.attach_spend(
+                    batch, self.collectors, self.env, self.session_id)
+            except Exception as exc:
+                self._log.warning("spend attach failed: %s", type(exc).__name__)
+                return
+            with self._state_lock:
+                current = self.last_batch
+                if current is None or current.generation != enriched.generation:
+                    return
+                self.last_batch = enriched
+                try:
+                    self._write_state()
+                except Exception as exc:
+                    self._log.warning("state publish failed: %s",
+                                      type(exc).__name__)
+
+        self._spend_threads = [thread for thread in self._spend_threads
+                               if thread.is_alive()]
+        worker = threading.Thread(target=_work, name="openusage-spend",
+                                  daemon=True)
+        self._spend_threads.append(worker)
+        worker.start()
+        return worker
 
     def _load_codex_options(self) -> list[dict]:
         try:
@@ -388,6 +454,8 @@ class Daemon:
 
 
 def serve(dirs: paths.Paths, stdin: TextIO | None = None) -> int:
+    os.umask(0o077)
+    paths.harden(dirs)
     paths.ensure_runtime_dir(dirs.runtime_dir)
     fd = os.open(dirs.daemon_lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:

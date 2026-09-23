@@ -183,7 +183,6 @@ def run_check(http, state: UpdateState, current: str, beta: bool,
     try:
         response = http.get(RELEASES_URL, headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "openusage-omarchy",
         }, timeout=30)
     except _httpmod.HttpError as exc:
         logger.warning("update check failed: %s", exc)

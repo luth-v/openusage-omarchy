@@ -105,6 +105,12 @@ def scan(data_dir: Path, since_ts: float) -> LogUsageScan | None:
 
 
 def has_hosted_usage(data_dir: Path) -> bool:
+    try:
+        list(data_dir.iterdir())
+    except OSError:
+        # Missing dir: no footprint. Present but unreadable: an OpenCode
+        # footprint, so refresh gets to surface the real error (upstream).
+        return data_dir.exists()
     for path in database_files(data_dir):
         conn = _connect(path)
         if conn is None:

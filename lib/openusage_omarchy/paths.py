@@ -144,3 +144,50 @@ def ensure_runtime_dir(path: Path) -> Path:
                 or stat.S_IMODE(info.st_mode) & 0o077):
             raise OSError("runtime directory must be private and owned by this user")
     return path
+
+
+def _chmod(path: Path, mode: int) -> None:
+    try:
+        if path.is_symlink():
+            return
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def harden(dirs: Paths) -> None:
+    """Make state and cache dirs 0700 and their files 0600, best-effort.
+
+    Runs at startup: writers already create private files, but QML-owned
+    layout.json and pre-existing installs may be wider. Never raises.
+    """
+    for directory in (dirs.state_dir, dirs.cache_dir, dirs.snapshots_dir,
+                      dirs.pricing_dir, dirs.scan_dir):
+        try:
+            ensure_dir(directory, 0o700)
+        except OSError:
+            continue
+    for root in (dirs.state_dir, dirs.cache_dir):
+        try:
+            entries = list(root.rglob("*"))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                _chmod(entry, 0o700)
+            elif entry.is_file():
+                _chmod(entry, 0o600)
+
+
+def harden_runtime_files(dirs: Paths) -> None:
+    """Re-tighten files rewritten at runtime (QML owns layout.json).
+
+    Called after each batch publish: a few chmods, no walk. Never raises.
+    """
+    stem = dirs.log_file.stem
+    for path in (dirs.state_file, dirs.layout_file, dirs.update_file,
+                 dirs.notify_file, dirs.log_file,
+                 dirs.log_file.with_name(f"{stem}.1.log")):
+        _chmod(path, 0o600)

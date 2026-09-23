@@ -1,8 +1,12 @@
 """Refresh engine. Parallel fetch, 120 s per-provider deadline, SWR cache.
 
-A failed refresh never wipes data: last-good snapshots stay, with the error
-attached. Late threads (past the deadline) can never publish: results are
-accepted only for the live batch generation.
+Quota first, spend second: ``refresh()`` fetches quota snapshots only, and
+``attach_spend()`` enriches them after the quota batch publishes, on its own
+deadline. A failed refresh never wipes data: last-good snapshots stay, with
+the error attached. Late threads (past the deadline) can never publish:
+results are accepted only for the live batch generation, as upstream
+``WidgetDataStore`` drops a cancelled provider's partial snapshot; the next
+scheduled batch retries.
 """
 
 from __future__ import annotations
@@ -14,9 +18,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .. import PROVIDER_DEADLINE_S, catalog, log, model
+from .. import PROVIDER_DEADLINE_S, SPEND_DEADLINE_S, catalog, log, model
 from ..providers import Env
 from . import cache
+
+#: Spend tile ids. A snapshot carrying any of these skips re-attachment.
+SPEND_IDS = frozenset({"today", "yesterday", "last30", "trend"})
 
 _counter = itertools.count(1)
 _lock = threading.Lock()
@@ -72,7 +79,12 @@ def _fetch_one(
 def _fallback(
     card: model.CardRef, env: Env, now: dt.datetime, error: model.ErrorInfo
 ) -> CardResult:
-    entry = cache.read(env.paths.snapshots_dir, card, now)
+    try:
+        entry = cache.read(env.paths.snapshots_dir, card, now)
+    except Exception as exc:  # a broken cache must never fail the batch
+        log.get_logger("cache").warning("cache read failed for %s: %s",
+                                        card.card_id, type(exc).__name__)
+        entry = None
     if entry is not None:
         return CardResult(
             card=card,
@@ -128,7 +140,12 @@ def refresh(
     pending: list[tuple[object, model.CardRef]] = []
     for collector, card in wanted:
         if not force:
-            entry = cache.read(env.paths.snapshots_dir, card, started)
+            try:
+                entry = cache.read(env.paths.snapshots_dir, card, started)
+            except Exception as exc:  # a broken cache reads as a miss
+                logger.warning("cache read failed for %s: %s", card.card_id,
+                               type(exc).__name__)
+                entry = None
             if entry is not None and cache.is_fresh(entry, session_id, started):
                 batch.results.append(
                     CardResult(
@@ -162,7 +179,15 @@ def refresh(
                 for future in concurrent.futures.as_completed(
                         futures, timeout=max(0.0, expires_at - time.monotonic())):
                     yielded.add(future)
-                    batch.results.append(future.result())
+                    try:
+                        batch.results.append(future.result())
+                    except Exception as exc:  # never let one card kill the batch
+                        _collector, fail_card = futures[future]
+                        logger.warning("%s result failed: %s", fail_card.card_id,
+                                       type(exc).__name__)
+                        batch.results.append(_fallback(
+                            fail_card, env, env.clock.now(),
+                            model.ErrorInfo("internal", "Refresh failed")))
             except concurrent.futures.TimeoutError:
                 pass
             missing = [info for fut, info in futures.items() if fut not in yielded]
@@ -184,3 +209,101 @@ def refresh(
     ok = sum(1 for item in batch.results if item.error is None)
     logger.info("refresh end: %d/%d ok", ok, len(batch.results))
     return batch
+
+
+def _has_spend(snapshot: model.Snapshot) -> bool:
+    return any(key in SPEND_IDS for key in snapshot.metrics)
+
+
+def _attach_one(
+    hook: object,
+    item: CardResult,
+    env: Env,
+    session_id: str,
+    live: threading.Event,
+    expires_at: float,
+) -> CardResult:
+    snapshot = item.snapshot
+    assert snapshot is not None
+    try:
+        enriched = catalog.check_snapshot(hook(item.card, env, snapshot, env.clock.now()))  # type: ignore[operator]
+    except Exception as exc:  # spend failure never breaks quota
+        log.get_logger("refresh").warning("%s spend attach failed: %s",
+                                          item.card.card_id, type(exc).__name__)
+        return item
+    if not live.is_set() or time.monotonic() >= expires_at:
+        return item
+    if enriched is snapshot or not enriched.metrics:
+        return item
+    merged = dict(snapshot.metrics)
+    merged.update(enriched.metrics)
+    full = model.Snapshot(card=snapshot.card, plan=snapshot.plan,
+                          fetched_at=snapshot.fetched_at, metrics=merged,
+                          error=snapshot.error)
+    try:
+        cache.write(env.paths.snapshots_dir, full, session_id, item.fetched_at)
+    except OSError as exc:
+        log.get_logger("cache").warning("cache write failed for %s: %s",
+                                        item.card.card_id, exc)
+    return CardResult(card=item.card, snapshot=full, error=item.error,
+                      from_cache=item.from_cache, fetched_at=item.fetched_at)
+
+
+def attach_spend(
+    batch: Batch,
+    collectors: list,
+    env: Env,
+    session_id: str,
+    deadline: float = SPEND_DEADLINE_S,
+) -> Batch:
+    """Enrich quota snapshots with spend tiles on a separate deadline.
+
+    Slow scans or pricing never touch the quota batch: cards that fail or
+    overrun keep their quota snapshot, and the next batch retries them.
+    Snapshots already carrying spend tiles are left alone. Never raises.
+    """
+    logger = log.get_logger("refresh")
+    by_family = {collector.family: collector for collector in collectors}  # type: ignore[attr-defined]
+    out: list[CardResult | None] = [None] * len(batch.results)
+    pending: dict[concurrent.futures.Future, int] = {}
+    pool = concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, len(batch.results)),
+        thread_name_prefix="openusage-spend")
+    try:
+        live = threading.Event()
+        live.set()
+        expires_at = time.monotonic() + max(0.0, deadline)
+        for index, item in enumerate(batch.results):
+            hook = None
+            if item.snapshot is not None and not _has_spend(item.snapshot):
+                collector = by_family.get(item.card.family)
+                hook = getattr(collector, "attach_spend", None)
+            if hook is None:
+                out[index] = item
+                continue
+            pending[pool.submit(_attach_one, hook, item, env, session_id,
+                                live, expires_at)] = index
+        if pending:
+            try:
+                for future in concurrent.futures.as_completed(
+                        pending, timeout=max(0.0, expires_at - time.monotonic())):
+                    try:
+                        out[pending[future]] = future.result()
+                    except Exception as exc:
+                        out[pending[future]] = batch.results[pending[future]]
+                        logger.warning("spend attach failed: %s", type(exc).__name__)
+            except concurrent.futures.TimeoutError:
+                pass
+            missing = [pos for fut, pos in pending.items() if out[pos] is None]
+            if missing:
+                live.clear()
+                for pos in missing:
+                    out[pos] = batch.results[pos]
+                    logger.warning("%s spend attach timed out; quota kept",
+                                   batch.results[pos].card.card_id)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    done = [item if item is not None else batch.results[pos]
+            for pos, item in enumerate(out)]
+    return Batch(generation=batch.generation, results=done,
+                 started_at=batch.started_at, ended_at=batch.ended_at)

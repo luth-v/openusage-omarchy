@@ -169,8 +169,7 @@ def fetch(card: model.CardRef, env: Env) -> model.Snapshot:
     last: model.CollectorError | None = None
     for cred in candidates:
         try:
-            snap = _probe(env, card, cred)
-            return _with_spend(card, env, snap, env.clock.now())
+            return _probe(env, card, cred)
         except model.CollectorError as exc:
             if exc.category == "auth":
                 last = exc
@@ -232,8 +231,13 @@ def _probe_account(
     )
 
 
-def _with_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
-                now: dt.datetime) -> model.Snapshot:
+def attach_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
+                 now: dt.datetime) -> model.Snapshot:
+    """Spend tiles for a quota snapshot. Never raises; quota wins on failure.
+
+    Runs after the quota batch publishes (see engine.refresh.attach_spend),
+    priced from the cached store while it revalidates in the background.
+    """
     if card.card_id != family:
         return snap
     try:

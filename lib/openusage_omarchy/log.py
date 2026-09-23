@@ -73,6 +73,12 @@ def setup(level: str, path: Path | None) -> logging.Logger:
         )
         root.addHandler(handler)
         root.propagate = False
+        for target in (path, path.with_name(f"{stem}.1.log")):
+            try:
+                if target.is_file() and not target.is_symlink():
+                    target.chmod(0o600)
+            except OSError:
+                pass
     return root
 
 

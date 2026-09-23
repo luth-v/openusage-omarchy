@@ -42,6 +42,8 @@ class DaemonKeysTest(unittest.TestCase):
             daemon._change_key(commands.DeleteKey(provider="zai"))
             self.assertIsNone(secrets.get_key("zai", env.paths))
             self.assertFalse(daemon.detected["zai"])
+            for thread in daemon._spend_threads:
+                thread.join(timeout=10)
 
     def test_state_carries_key_presence(self):
         with tempfile.TemporaryDirectory() as tmp, support.test_env(tmp) as env:
@@ -203,6 +205,10 @@ class DaemonMergeTest(unittest.TestCase):
             cards = {card["cardId"]: card for card in state["cards"]}
             self.assertEqual(cards["claude"]["plan"], "Pro")
             self.assertEqual(cards["codex"]["plan"], "Pro")
+            for thread in daemon._spend_threads:
+                thread.join(timeout=10)
+            from openusage_omarchy.spend import pricing_store as _store
+            _store.Store.join_background()
 
     def test_disabled_card_is_not_sent_to_refresh(self):
         from openusage_omarchy.engine.refresh import Batch
@@ -217,6 +223,10 @@ class DaemonMergeTest(unittest.TestCase):
                        return_value=Batch(generation=1)) as refresh:
                 daemon._run_batch(force=False, families=None)
             self.assertEqual(refresh.call_args.kwargs["enabled_ids"], set())
+            for thread in daemon._spend_threads:
+                thread.join(timeout=10)
+            from openusage_omarchy.spend import pricing_store as _store
+            _store.Store.join_background()
 
     def test_explicit_refresh_works_before_layout_write_finishes(self):
         from openusage_omarchy.engine.refresh import Batch
@@ -236,6 +246,8 @@ class DaemonMergeTest(unittest.TestCase):
                                   requested_card_id="ollama")
             self.assertEqual(refresh.call_args.kwargs["enabled_ids"], {"ollama"})
             self.assertEqual(in_flight, ["ollama"])
+            for thread in daemon._spend_threads:
+                thread.join(timeout=10)
 
 
 class CadenceTest(unittest.TestCase):

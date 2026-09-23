@@ -9,11 +9,40 @@ Loopback hosts always bypass the proxy (the Antigravity language server).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Protocol
 from urllib import request as _request
 from urllib.error import HTTPError, URLError
 
 from . import HTTP_TIMEOUT_S, log, proxy as _proxy, redact
+
+
+@lru_cache(maxsize=1)
+def _version() -> str:
+    """Manifest version for the default User-Agent. Never raises."""
+    try:
+        from . import catalog as _catalog
+
+        found = _catalog.manifest_version()
+    except (OSError, ValueError):
+        return "0"
+    return found.strip() or "0"
+
+
+def default_user_agent() -> str:
+    return f"openusage-omarchy/{_version()}"
+
+
+def _with_default_headers(headers: dict[str, str] | None) -> dict[str, str]:
+    """Copy headers, adding our User-Agent unless the caller set one.
+
+    Functional UAs (Claude Code, Antigravity, Copilot chat) stay untouched.
+    The default replaces Python-urllib's, which some CDNs reject (403).
+    """
+    merged = dict(headers or {})
+    if not any(key.lower() == "user-agent" for key in merged):
+        merged["User-Agent"] = default_user_agent()
+    return merged
 
 
 @dataclass(frozen=True)
@@ -82,7 +111,9 @@ class Http:
         timeout: float,
     ) -> Response:
         deadline = min(max(float(timeout), 1.0), HTTP_TIMEOUT_S)
-        req = _request.Request(url, data=body, method=method, headers=headers or {})
+        req = _request.Request(
+            url, data=body, method=method,
+            headers=_with_default_headers(headers))
         if _proxy.is_loopback(url):
             opener = _loopback_opener().open
         elif self._remote_opener is not None:

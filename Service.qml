@@ -38,7 +38,8 @@ Item {
     readonly property string starNotice: store.starNotice
     readonly property string starTone: store.starTone
     readonly property int starNoticeTrigger: store.starNoticeTrigger
-    readonly property var detected: State.detectedMap(root.state)
+    readonly property real startedAt: Date.now()
+    readonly property var detected: State.freshDetected(root.state, root.startedAt)
     readonly property var cardIds: State.cardIds(root.state)
 
     function refresh(force, cardId) {

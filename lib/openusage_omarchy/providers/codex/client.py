@@ -32,7 +32,6 @@ def _usage_headers(token: str, account_id: str) -> dict[str, str]:
     headers = {
         "Authorization": "Bearer " + token,
         "Accept": "application/json",
-        "User-Agent": "OpenUsage",
     }
     if account_id.strip():
         headers["ChatGPT-Account-Id"] = account_id.strip()

@@ -103,6 +103,12 @@ def test_env(tmp: str | os.PathLike[str], now: dt.datetime = NOW) -> Iterator[En
             yield Env(http=FakeHttp(), clock=FakeClock(now), paths=paths.Paths.from_env())
         finally:
             logger.removeHandler(mute)
+            try:
+                from openusage_omarchy.spend import pricing_store as _store
+
+                _store.Store.join_background()
+            except Exception:
+                pass
 
 
 SHIM_SOURCE = '''#!{python}

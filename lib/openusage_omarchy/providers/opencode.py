@@ -65,10 +65,21 @@ def read_key(env: Env) -> str:
 
 
 def has_credentials(env: Env) -> bool:
+    """The Go key, or any hosted usage already in the local database.
+
+    Mirrors upstream ``hasLocalCredentials()`` exactly: an unreadable
+    auth.json is itself an OpenCode footprint (refresh surfaces the fix),
+    and local-only users still count through their hosted rows.
+    """
     try:
-        return bool(read_key(env))
+        if read_key(env):
+            return True
     except model.CollectorError:
         return True
+    try:
+        return bool(_scan.has_hosted_usage(data_dir(env)))
+    except Exception:
+        return False
 
 
 def cards(env: Env) -> list[model.CardRef]:
@@ -148,15 +159,19 @@ def fetch(card: model.CardRef, env: Env) -> model.Snapshot:
         metrics = parse_windows(_http.parse_json_object(reply.body))
     except ValueError:
         raise model.CollectorError("empty", "Usage response invalid. Try again later.")
-    snap = model.Snapshot(card=card, plan="Go", fetched_at=iso_now(env), metrics=metrics)
-    return _with_spend(card, env, snap, env.clock.now())
+    return model.Snapshot(card=card, plan="Go", fetched_at=iso_now(env), metrics=metrics)
 
 
 NOTE = "From your OpenCode logs"
 
 
-def _with_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
-                now: dt.datetime) -> model.Snapshot:
+def attach_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
+                 now: dt.datetime) -> model.Snapshot:
+    """Spend tiles for a quota snapshot. Never raises; quota wins on failure.
+
+    Runs after the quota batch publishes (see engine.refresh.attach_spend).
+    OpenCode costs come from its own database, so no pricing store is read.
+    """
     try:
         stamp = _spend_ctx.since_ts(env)
         found = _scan.scan(data_dir(env), stamp)

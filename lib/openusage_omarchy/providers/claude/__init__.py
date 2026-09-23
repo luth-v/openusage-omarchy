@@ -233,8 +233,7 @@ def fetch(card: model.CardRef, env: Env) -> model.Snapshot:
         if _auth.live_availability(cred) == "inferenceOnlyToken":
             continue
         try:
-            snap = _probe(env, card, cred, identity, config, now)
-            return _with_spend(card, env, snap, now)
+            return _probe(env, card, cred, identity, config, now)
         except model.CollectorError as exc:
             if exc.category == "auth":
                 last_error = exc
@@ -243,8 +242,14 @@ def fetch(card: model.CardRef, env: Env) -> model.Snapshot:
     raise last_error or model.CollectorError("auth", _auth.NOT_LOGGED_IN)
 
 
-def _with_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
-                now: dt.datetime) -> model.Snapshot:
+def attach_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
+                 now: dt.datetime) -> model.Snapshot:
+    """Spend tiles for a quota snapshot. Never raises; quota wins on failure.
+
+    The engine runs this after the quota batch publishes, so a slow log
+    scan never trips the provider deadline. Pricing is cached-only here:
+    the store revalidates in the background (see pricing_store.Store).
+    """
     # Multi-account installs share one home; only the bare card carries
     # history so Total Spend never double-counts. Full per-org filtering
     # stays future work.

@@ -162,14 +162,22 @@ def fetch(card: model.CardRef, env: Env) -> model.Snapshot:
     _append_grok_bot(env, access, metrics)
     if not metrics:
         raise model.CollectorError("empty", "Usage response invalid. Try again later.")
-    snap = model.Snapshot(card=card, plan=label, fetched_at=iso_now(env), metrics=metrics)
-    return _with_spend(card, env, access, snap, env.clock.now())
+    return model.Snapshot(card=card, plan=label, fetched_at=iso_now(env), metrics=metrics)
 
 
-def _with_spend(card: model.CardRef, env: Env, access: str,
-                snap: model.Snapshot, now: Any) -> model.Snapshot:
+def attach_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
+                 now: Any) -> model.Snapshot:
+    """Spend tiles for a quota snapshot. Never raises; quota wins on failure.
+
+    Runs after the quota batch publishes (see engine.refresh.attach_spend).
+    Re-reads the access token so rotation between quota and spend is safe.
+    """
     # CSV is strictly additive: any failure leaves quota intact.
     try:
+        access = _auth.read_state(_auth.db_path(env)).get(
+            "cursorAuth/accessToken", "")
+        if not access:
+            return snap
         session = _auth.session_cookie(access)
         if session is None:
             return snap

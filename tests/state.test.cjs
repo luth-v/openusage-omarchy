@@ -11,6 +11,11 @@ const good = {schema: 'openusage-omarchy.state.v1', cards: [
   {cardId: 'claude:abc', family: 'claude', label: 'Claude Work', detected: true, metrics: {}},
 ]};
 assert.equal(m.parseState(JSON.stringify(good)).ok, true);
+const at = Date.parse('2026-09-23T14:00:00Z');
+assert.equal(m.freshDetected(null, at), null);
+assert.equal(m.freshDetected({...good, generatedAt: '2026-09-23T13:59:59Z'}, at), null);
+assert.equal(m.freshDetected({...good}, at), null);
+assert.deepEqual(norm(m.freshDetected({...good, generatedAt: '2026-09-23T14:00:01+00:00'}, at)), {cursor: true, grok: false, claude: true});
 assert.equal(m.parseState('{bad').ok, false);
 assert.equal(m.parseState(JSON.stringify({schema: 'x', cards: []})).ok, false);
 assert.equal(m.parseState(JSON.stringify({schema: 'openusage-omarchy.state.v1'})).ok, false);

@@ -36,6 +36,16 @@ function detectedMap(state) {
     }
     return out;
 }
+// Detection for first-run only counts once this service's daemon has
+// published: an older state.json on disk reflects a previous layout.
+function freshDetected(state, sinceMs) {
+    if (!state || !Array.isArray(state.cards) || !state.generatedAt)
+        return null;
+    var at = Date.parse(state.generatedAt);
+    if (!(at >= sinceMs))
+        return null;
+    return detectedMap(state);
+}
 function cardById(state, cardId) {
     if (!state || !Array.isArray(state.cards))
         return null;

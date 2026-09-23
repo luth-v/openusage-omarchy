@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,16 @@ def _bundled(name: str) -> bytes | None:
 
 
 class Store:
-    """Stale-while-revalidate pricing with ETag and state file."""
+    """Stale-while-revalidate pricing with ETag and state file.
+
+    ``current()`` never blocks on the network: it serves the bundled plus
+    cached data on hand and revalidates in a background thread, as upstream
+    ``ModelPricingStore.current()``. One refresh runs per cache dir at a
+    time; every caller shares the files it writes.
+    """
+
+    _guard = threading.Lock()
+    _inflight: dict[str, threading.Thread] = {}
 
     def __init__(self, cache_dir: Path, http: Any = None,
                  urls: dict[str, str] | None = None) -> None:
@@ -45,12 +55,61 @@ class Store:
     def current(self) -> ModelPricing:
         if not self._loaded:
             self._load()
-        if self.http is not None:
-            try:
-                self.refresh_due()
-            except Exception:
-                pass
+        self.refresh_due_background()
         return self._pricing
+
+    def refresh_due_background(self) -> bool:
+        """Kick a refresh thread when a source is due. Never blocks."""
+        if self.http is None:
+            return False
+        key = str(self.cache_dir)
+        with Store._guard:
+            live = Store._inflight.get(key)
+            if live is not None and live.is_alive():
+                return True
+            worker = threading.Thread(
+                target=self._background, name="openusage-pricing",
+                daemon=True)
+            Store._inflight[key] = worker
+            worker.start()
+            return True
+
+    def _background(self) -> None:
+        try:
+            self.refresh_due()
+        except Exception:
+            pass
+        finally:
+            key = str(self.cache_dir)
+            with Store._guard:
+                if Store._inflight.get(key) is threading.current_thread():
+                    Store._inflight.pop(key, None)
+
+    def refresh_now(self, now: dt.datetime | None = None,
+                    timeout: float = 120) -> bool:
+        """Deterministic refresh point for tests and the CLI.
+
+        Joins an in-flight background refresh first so back-to-back calls
+        cannot overlap on one cache dir, then runs due fetches inline.
+        """
+        key = str(self.cache_dir)
+        with Store._guard:
+            live = Store._inflight.get(key)
+        if live is not None and live is not threading.current_thread():
+            live.join(timeout=timeout)
+        if not self._loaded:
+            self._load()
+        return self.refresh_due(now=now)
+
+    @classmethod
+    def join_background(cls, timeout: float = 30) -> None:
+        """Join every in-flight refresh thread. Tests call this on teardown
+        so no worker outlives its temporary cache dir."""
+        with cls._guard:
+            threads = [thread for thread in cls._inflight.values()
+                       if thread is not threading.current_thread()]
+        for thread in threads:
+            thread.join(timeout=timeout)
 
     def source_info(self) -> tuple[str, str | None]:
         if not self._loaded:
