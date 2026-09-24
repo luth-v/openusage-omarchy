@@ -23,6 +23,17 @@ Ui.Panel {
     readonly property bool anyPopupOpen: styleDrop.popupOpen || densityDrop.popupOpen || timeDrop.popupOpen || displayDrop.popupOpen || resetDrop.popupOpen || logDrop.popupOpen
     property bool resetOpen: false
     property string logActionError: ""
+    property bool labelEditing: false
+    readonly property var claudeAccounts: root.hostWidget ? root.hostWidget.setting("claudeAccounts", {}) : {}
+    readonly property var claudeRows: Settings.claudeAccountRows(root.service ? root.service.state : null, root.claudeAccounts)
+    // Each write reloads the shell; the forced refresh re-assembles cards.
+    function persistClaudeAccount(dir, patch) {
+        if (!root.hostWidget)
+            return;
+        root.hostWidget.persist("claudeAccounts", Settings.claudeAccountsWith(root.claudeAccounts, dir, patch));
+        if (root.service)
+            root.service.refresh(true);
+    }
     function goBack() {
         if (root.resetOpen) {
             root.resetOpen = false;
@@ -74,7 +85,7 @@ Ui.Panel {
         Ui.PanelKeyCatcher {
             id: keys
             anchors.fill: parent
-            blocked: recorder.recording || root.anyPopupOpen
+            blocked: recorder.recording || root.anyPopupOpen || root.labelEditing
             onCloseRequested: root.goBack()
             onReturnRequested: {
                 if (root.resetOpen) {
@@ -228,6 +239,46 @@ Ui.Panel {
                                 compact: root.compact
                                 checked: root.hostWidget ? !!root.hostWidget.setting("alwaysShowPacing", false) : false
                                 onFlipped: function(next) { root.hostWidget.persist("alwaysShowPacing", next); }
+                            }
+                        }
+                        // ADR 0006: one Account per Claude config dir. Labels
+                        // name the card; a hidden dir is not tracked at all.
+                        SettingsSection {
+                            title: "Claude Accounts"
+                            visible: root.claudeRows.length > 0
+                            height: visible ? implicitHeight : 0
+                            Repeater {
+                                model: root.claudeRows
+                                delegate: SettingsRow {
+                                    id: accountRow
+                                    required property var modelData
+                                    label: modelData.dir
+                                    tip: "Label names this Account's card. Turn off to stop tracking this config dir."
+                                    compact: root.compact
+                                    Row {
+                                        spacing: Style.space(8)
+                                        Ui.TextField {
+                                            id: labelInput
+                                            width: Style.space(120)
+                                            text: accountRow.modelData.label
+                                            placeholderText: accountRow.modelData.placeholder
+                                            font.pixelSize: Style.font.bodySmall
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            onActiveFocusChanged: root.labelEditing = activeFocus
+                                            onEditingFinished: {
+                                                if (text.trim() !== accountRow.modelData.label)
+                                                    root.persistClaudeAccount(accountRow.modelData.dir, {label: text});
+                                            }
+                                        }
+                                        Ui.ToggleSwitch {
+                                            width: implicitWidth
+                                            height: implicitHeight
+                                            checked: !accountRow.modelData.hidden
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            onToggled: root.persistClaudeAccount(accountRow.modelData.dir, {hidden: !accountRow.modelData.hidden})
+                                        }
+                                    }
+                                }
                             }
                         }
                         SettingsSection {

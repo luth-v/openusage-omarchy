@@ -192,4 +192,19 @@ assert.equal(m.migrate({schema: 'other'}), null);
   const providerReset = m.reduce(changed, {type: 'resetProvider', cardId: 'claude'}, catalog);
   assert.deepEqual(norm(providerReset.layout.spend), {period: 'last30', metric: 'tokens'});
 }
+// New Accounts land after their family's existing cards, enabled like the
+// family card, and never disturb saved entries.
+{
+  let base = m.defaults(catalog, {claude: true});
+  base = m.ensureCards(base, catalog, ['claude:one']);
+  base.cards['claude:one'].stars = ['weekly'];
+  const next = m.ensureCards(base, catalog, ['claude:one', 'claude:two']);
+  const at = next.order.indexOf('claude');
+  assert.deepEqual(norm(next.order.slice(at, at + 3)), ['claude', 'claude:one', 'claude:two']);
+  assert.equal(next.cards['claude:two'].enabled, true);
+  assert.deepEqual(norm(next.cards['claude:one'].stars), ['weekly']);
+  const merged = m.merge(next, catalog, {claude: true});
+  assert.deepEqual(norm(merged.order), norm(next.order));
+  assert.equal(merged.cards['claude:two'].enabled, true);
+}
 console.log('Layout tests passed');

@@ -83,6 +83,30 @@ source = $HOME/.config/openusage-omarchy/hyprland.conf
 Clearing the shortcut removes the bind file. The plugin never touches
 `~/.config/hypr/*`.
 
+### Multiple Claude accounts
+
+Claude Code keeps one login per config dir, so give each Account its own
+dir and log in once there (ADR 0006):
+
+```sh
+alias claude-work='CLAUDE_CONFIG_DIR=~/.claude-work claude'
+claude-work   # then /login with the second account
+```
+
+`~/.claude` and every `~/.claude-<name>` dir with a login (plus any
+`CLAUDE_CONFIG_DIR` entries) are found on the next refresh. Each Account
+gets its own Claude card with its own Quotas and Spend; the same login in
+two dirs is one card with the Spend of both. Cards read "Claude — work"
+(the dir suffix, `~/.claude` is "Default"); rename or hide a dir in
+Settings → Claude Accounts, stored in shell.json as:
+
+```json
+"claudeAccounts": { "~/.claude-work": { "label": "Work", "hidden": false } }
+```
+
+With several Claude cards enabled, each Star on the bar gets the label's
+initial ("W 42%"). Emails are never shown.
+
 ### Local HTTP API
 
 Read-only JSON on `http://127.0.0.1:6736` (loopback only, fixed port):

@@ -104,3 +104,37 @@ function fallbackUnavailable(options, selected) {
             return false;
     return true;
 }
+// Settings `claudeAccounts`: {"~/.claude-work": {label, hidden}} keyed by
+// config dir (ADR 0006). Returns a new object with one dir patched; an entry
+// back at defaults (no label, shown) is dropped so shell.json stays small.
+function claudeAccountsWith(current, dir, patch) {
+    var out = {};
+    var source = current && typeof current === "object" && !Array.isArray(current) ? current : {};
+    for (var key in source)
+        if (source.hasOwnProperty(key) && source[key] && typeof source[key] === "object")
+            out[key] = {label: String(source[key].label || ""), hidden: source[key].hidden === true};
+    var name = String(dir || "");
+    if (!name)
+        return out;
+    var entry = out[name] || {label: "", hidden: false};
+    if (patch && typeof patch.label === "string")
+        entry.label = patch.label.trim();
+    if (patch && typeof patch.hidden === "boolean")
+        entry.hidden = patch.hidden;
+    if (entry.label === "" && !entry.hidden)
+        delete out[name];
+    else
+        out[name] = entry;
+    return out;
+}
+// One row per discovered dir from state.claudeAccounts, labels from Settings.
+function claudeAccountRows(state, saved) {
+    var list = state && Array.isArray(state.claudeAccounts) ? state.claudeAccounts : [];
+    var prefs = saved && typeof saved === "object" ? saved : {};
+    return list.filter(function(row) { return row && typeof row.dir === "string"; }).map(function(row) {
+        var pref = prefs[row.dir] || {};
+        return {dir: row.dir, placeholder: String(row.placeholder || ""),
+            label: typeof pref.label === "string" ? pref.label : String(row.label || ""),
+            hidden: pref.hidden === true || (pref.hidden === undefined && row.hidden === true)};
+    });
+}

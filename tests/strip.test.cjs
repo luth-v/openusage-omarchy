@@ -101,4 +101,27 @@ assert.ok(Math.abs(m.visualFraction(1) - 1) < 0.0001);
   assert.equal(geo.trackW, 18 - 2 * geo.pad);
   assert.ok(geo.trackH >= 1 && geo.rx >= 1);
 }
+// ADR 0006: several enabled Accounts in a family get a short prefix per Star.
+{
+  let layout = m.defaults(catalog, {claude: true});
+  layout = m.ensureCards(layout, catalog, ['claude:aaaa1111', 'claude:bbbb2222']);
+  for (const id of ['claude', 'claude:aaaa1111', 'claude:bbbb2222'])
+    layout.cards[id].stars = ['session'];
+  const card = (cardId, label, used) => ({cardId, family: 'claude', label, metrics: {session: progress(used, 100)}});
+  const state = {schema: 'openusage-omarchy.state.v1', cards: [
+    card('claude', 'Claude — Default', 10), card('claude:aaaa1111', 'Claude — work', 42),
+    card('claude:bbbb2222', 'Claude — Wife', 5)]};
+  const content = m.build(layout, catalog, state, 'Used', fmt);
+  assert.deepEqual(norm(content.groups.map((g) => g.metrics[0].value)), ['D 10%', 'Wo 42%', 'Wi 5%']);
+  assert.deepEqual(norm(content.groups.map((g) => g.family)), ['claude', 'claude', 'claude']);
+  assert.ok(content.accessibilityText.startsWith('Claude — Default Session D 10%'));
+  // One enabled Account: output unchanged, no prefix.
+  layout.cards['claude:aaaa1111'].enabled = false;
+  layout.cards['claude:bbbb2222'].enabled = false;
+  const single = m.build(layout, catalog, state, 'Used', fmt);
+  assert.deepEqual(norm(single.groups.map((g) => g.metrics[0].value)), ['10%']);
+  assert.equal(single.accessibilityText, 'Claude Session 10%');
+  assert.deepEqual(norm(m.accountPrefixes({a: 'work', b: 'Default'})), {a: 'W', b: 'D'});
+  assert.equal(m.accountLabel('Claude'), '');
+}
 console.log('Strip tests passed');

@@ -47,4 +47,19 @@ assert.deepEqual(norm(m.shortcutPayload(['SUPER'], 'Delete')),
   assert.equal(m.fallbackUnavailable(options, 'gpt-5'), false);
   assert.equal(m.fallbackUnavailable(options, 'gpt-9'), true);
 }
+// claudeAccounts: patch one dir, drop entries back at defaults (ADR 0006).
+{
+  const one = m.claudeAccountsWith({}, '~/.claude-work', {label: ' Work '});
+  assert.deepEqual(norm(one), {'~/.claude-work': {label: 'Work', hidden: false}});
+  const hidden = m.claudeAccountsWith(one, '~/.claude', {hidden: true});
+  assert.deepEqual(norm(hidden['~/.claude']), {label: '', hidden: true});
+  assert.deepEqual(norm(m.claudeAccountsWith(hidden, '~/.claude', {hidden: false})), norm(one));
+  assert.deepEqual(norm(m.claudeAccountsWith(one, '~/.claude-work', {label: ''})), {});
+  const state = {claudeAccounts: [{dir: '~/.claude', label: '', placeholder: 'Default', hidden: false},
+    {dir: '~/.claude-work', label: '', placeholder: 'work', hidden: true}]};
+  assert.deepEqual(norm(m.claudeAccountRows(state, one)), [
+    {dir: '~/.claude', placeholder: 'Default', label: '', hidden: false},
+    {dir: '~/.claude-work', placeholder: 'work', label: 'Work', hidden: false}]);
+  assert.deepEqual(norm(m.claudeAccountRows(null, {})), []);
+}
 console.log('Settings tests passed');

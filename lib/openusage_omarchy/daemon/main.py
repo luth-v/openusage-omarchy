@@ -87,6 +87,7 @@ class Daemon:
         self.detected: dict[str, bool] = {}
         self.key_sources: dict[str, str] = {}
         self.codex_options: list[dict] = []
+        self.claude_accounts: list[dict] = []
         self.in_flight: list[str] = []
         self.next_at: dt.datetime | None = None
         self.last_batch: _refresh.Batch | None = None
@@ -285,6 +286,11 @@ class Daemon:
                 except Exception as exc:
                     self._log.warning("codex options failed: %s",
                                       type(exc).__name__)
+                try:
+                    self.claude_accounts = self._load_claude_accounts()
+                except Exception as exc:
+                    self._log.warning("claude accounts failed: %s",
+                                      type(exc).__name__)
                 if batch is not None:
                     try:
                         self._notify_pass(batch)
@@ -344,6 +350,10 @@ class Daemon:
         except Exception:
             return []
 
+    def _load_claude_accounts(self) -> list[dict]:
+        from ..providers.claude import accounts as _claude_accounts
+        return _claude_accounts.settings_rows(self.env)
+
     def _fallback_rescan_due(self) -> bool:
         """True when the fallback choice changed since the last batch.
 
@@ -382,6 +392,7 @@ class Daemon:
             pricing=pricing,
             last_claims=dict(self._last_claims),
             codex_options=list(self.codex_options),
+            claude_accounts=list(self.claude_accounts),
             update=self.update_state.to_dict(),
             api_listening=self.api_listening,
         )

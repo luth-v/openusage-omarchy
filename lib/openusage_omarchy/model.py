@@ -253,7 +253,10 @@ class Snapshot:
 
 
 class CollectorError(Exception):
-    def __init__(self, category: str, message: str) -> None:
+    def __init__(self, category: str, message: str,
+                 retry_after: int | None = None) -> None:
         super().__init__(message)
         self.category = category
         self.message = message
+        # Seconds the upstream asked us to wait (Retry-After), if it said.
+        self.retry_after = retry_after

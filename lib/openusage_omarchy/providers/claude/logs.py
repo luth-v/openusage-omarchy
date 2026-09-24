@@ -271,8 +271,12 @@ def aggregate(entries: list[dict[str, Any]], since_ts: float,
 
 
 def scan(home: Path, cache_base: Path, since_ts: float,
-         pricing: ModelPricing) -> LogUsageScan | None:
-    roots = config_roots(home)
+         pricing: ModelPricing,
+         roots: list[Path] | None = None) -> LogUsageScan | None:
+    """One Account's Spend. ``roots`` defaults to ``config_roots``; the cache
+    identity carries the roots, so per-Account scans never share a cache."""
+    if roots is None:
+        roots = config_roots(home)
     store = Store(cache_base, "claude", SCHEMA)
     identity = "home=" + str(home) + "\nroots=" + "\n".join(sorted(str(item) for item in roots))
     if not roots:

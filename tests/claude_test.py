@@ -119,8 +119,6 @@ class ClaudeMapper(unittest.TestCase):
         self.assertEqual(_mapper.parse_retry_after({"Retry-After": "120"}, now), 120)
         self.assertIsNone(_mapper.parse_retry_after({}, now))
         self.assertIsNone(_mapper.parse_retry_after({"Retry-After": "junk junk"}, now))
-        self.assertIn("2m", _mapper.rate_limit_message(120))
-        self.assertIn("now", _mapper.rate_limit_message(0))
 
 
 class ClaudeAuth(unittest.TestCase):
@@ -171,7 +169,7 @@ class ClaudeAuth(unittest.TestCase):
             self.assertEqual(swaps[0].identity_key, f"{USER}|{ORG}")
             key, label, _anchor = _accounts.default_identity(env)
             self.assertEqual(key, f"{USER}|{ORG}")
-            self.assertIn("Acme", label)
+            self.assertEqual(label, "Acme")
             cards = _accounts.assemble(env)
             self.assertEqual(len(cards), 1)
             self.assertEqual(cards[0].card_id, "claude")
@@ -260,7 +258,7 @@ class ClaudeFetch(unittest.TestCase):
                 with self.assertRaises(model.CollectorError) as ctx:
                     claude.fetch(claude.cards(env)[0], env)
                 self.assertEqual(ctx.exception.category, "rate_limited")
-                self.assertIn("2m", ctx.exception.message)
+                self.assertEqual(ctx.exception.retry_after, 120)
 
     def test_missing_scope_is_auth_error(self):
         with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
@@ -285,6 +283,252 @@ class ClaudeFetch(unittest.TestCase):
                         claude.fetch(claude.cards(env)[0], env)
                     self.assertIn("Not logged in", ctx.exception.message)
 
+
+USER_B = "33333333-3333-3333-3333-333333333333"
+ORG_B = "44444444-4444-4444-4444-444444444444"
+FUTURE_MS = 4_102_444_800_000  # 2100-01-01, never refreshed in tests
+
+
+class _Prefs:
+    def __init__(self, values: dict) -> None:
+        self.values = values
+
+    def get(self, key, fallback=None):
+        return self.values.get(key, fallback)
+
+
+def _login(directory: Path, token: str, expires_at: int = FUTURE_MS) -> Path:
+    path = directory / ".credentials.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": token, "refreshToken": "tok-refresh",
+        "expiresAt": expires_at, "scopes": ["user:profile"]}}))
+    return path
+
+
+def _identity(path: Path, user: str, org: str, name: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"oauthAccount": {
+        "accountUuid": user, "organizationUuid": org,
+        "organizationName": name, "emailAddress": "someone@example.invalid"}}))
+
+
+def _session_log(directory: Path, ident: str, tokens: int) -> None:
+    base = directory / "projects" / "test-only-p"
+    base.mkdir(parents=True, exist_ok=True)
+    (base / f"{ident}.jsonl").write_text(json.dumps({
+        "message": {"id": f"test-only-{ident}", "model": "test-only-model",
+                    "usage": {"input_tokens": tokens, "output_tokens": 0}},
+        "timestamp": "2026-09-23T01:00:00Z", "requestId": f"test-only-{ident}",
+        "costUSD": 0.01, "version": "1.0.0"}, separators=(",", ":")) + "\n")
+
+
+def _spend_tokens(env, ref) -> int:
+    from openusage_omarchy.daemon import publish as _publish
+
+    snap = model.Snapshot(card=ref, plan=None, fetched_at="", metrics={})
+    enriched = claude.attach_spend(ref, env, snap, support.NOW)
+    metric = enriched.metrics.get("last30")
+    return _publish._spend_values(metric)[1] if metric else 0
+
+
+def _two_accounts(home: Path) -> None:
+    _login(home / ".claude", "tok-a")
+    _identity(home / ".claude.json", USER, ORG, "Acme")
+    _login(home / ".claude-work", "tok-b")
+    _identity(home / ".claude-work" / ".claude.json", USER_B, ORG_B, "Globex")
+
+
+class ClaudeConfigDirs(unittest.TestCase):
+    """ADR 0006: one Account per Claude config dir."""
+
+    def test_two_dirs_two_identities(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            with support.test_env(tmp) as env:
+                home = Path(tmp) / "home"
+                _two_accounts(home)
+                (home / ".claude-swap-backup").mkdir()
+                _session_log(home / ".claude", "a", 100)
+                _session_log(home / ".claude-work", "b", 7)
+                refs = claude.cards(env)
+                self.assertEqual([ref.card_id for ref in refs][0], "claude")
+                self.assertEqual(len(refs), 2)
+                self.assertTrue(refs[1].card_id.startswith("claude:"))
+                self.assertEqual([ref.label for ref in refs],
+                                 ["Claude — Default", "Claude — work"])
+                tokens = [[c.oauth.access_token for c in claude._candidates(env, ref)]
+                          for ref in refs]
+                self.assertEqual(tokens, [["tok-a"], ["tok-b"]])
+                paths = [claude._candidates(env, ref)[0].path for ref in refs]
+                self.assertTrue(paths[1].endswith(".claude-work/.credentials.json"))
+                self.assertEqual([_spend_tokens(env, ref) for ref in refs], [100, 7])
+
+    def test_env_token_only_on_bare_card(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "tok-env"}):
+                with support.test_env(tmp) as env:
+                    _two_accounts(Path(tmp) / "home")
+                    refs = claude.cards(env)
+                    sources = [[c.source for c in claude._candidates(env, ref)]
+                               for ref in refs]
+                    self.assertIn("environment", sources[0])
+                    self.assertNotIn("environment", sources[1])
+
+    def test_same_identity_two_dirs_is_one_card(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            with support.test_env(tmp) as env:
+                home = Path(tmp) / "home"
+                _login(home / ".claude", "tok-a")
+                _identity(home / ".claude.json", USER, ORG, "Acme")
+                _login(home / ".claude-alt", "tok-b", expires_at=1000)
+                _identity(home / ".claude-alt" / ".claude.json", USER, ORG, "Acme")
+                _session_log(home / ".claude", "a", 100)
+                _session_log(home / ".claude-alt", "b", 7)
+                refs = claude.cards(env)
+                self.assertEqual([(r.card_id, r.label) for r in refs],
+                                 [("claude", "Claude")])
+                found = claude._candidates(env, refs[0])
+                self.assertEqual([c.oauth.access_token for c in found],
+                                 ["tok-a", "tok-b"])
+                self.assertEqual(_spend_tokens(env, refs[0]), 107)
+
+    def test_env_dir_deduped_by_realpath(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            with patch.dict(os.environ, {
+                    "CLAUDE_CONFIG_DIR": f"{home}/.claude-work,{home}/link-work"}):
+                with support.test_env(tmp) as env:
+                    _two_accounts(home)
+                    (home / "link-work").symlink_to(home / ".claude-work")
+                    dirs = _accounts.discover_config_dirs(env)
+                    self.assertEqual([d.key for d in dirs],
+                                     ["~/.claude", "~/.claude-work"])
+
+    def test_hidden_dir_excluded(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            with support.test_env(tmp) as base:
+                home = Path(tmp) / "home"
+                _two_accounts(home)
+                _session_log(home / ".claude-work", "b", 7)
+                env = Env(http=base.http, clock=base.clock, paths=base.paths,
+                          settings=_Prefs({"claudeAccounts": {
+                              "~/.claude-work": {"hidden": True}}}))
+                refs = claude.cards(env)
+                self.assertEqual([(r.card_id, r.label) for r in refs],
+                                 [("claude", "Claude")])
+                self.assertEqual(_spend_tokens(env, refs[0]), 0)
+                rows = _accounts.settings_rows(env)
+                self.assertEqual([(r["dir"], r["hidden"]) for r in rows],
+                                 [("~/.claude", False), ("~/.claude-work", True)])
+
+    def test_label_precedence(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            outside = Path(tmp) / "elsewhere"
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(outside)}):
+                with support.test_env(tmp) as base:
+                    _two_accounts(home)
+                    _login(outside, "tok-c")
+                    _identity(outside / ".claude.json", USER_B, ORG, "Initech")
+                    env = Env(http=base.http, clock=base.clock, paths=base.paths,
+                              settings=_Prefs({"claudeAccounts": {
+                                  "~/.claude": {"label": "Personal"}}}))
+                    labels = [r.label for r in claude.cards(env)]
+                    # User label, then dir suffix, then organization name.
+                    self.assertEqual(labels, ["Claude — Personal", "Claude — work",
+                                              "Claude — Initech"])
+            bare = _accounts.ConfigDir(path="/x/y", key="/x/y", identity_key="k",
+                                       organization_id=ORG)
+            self.assertEqual(bare.label(), f"Organization {ORG[:8]}")
+
+    def test_personal_org_name_never_carries_email(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "elsewhere"
+            with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(outside)}):
+                with support.test_env(tmp) as env:
+                    _login(outside, "tok-c")
+                    _identity(outside / ".claude.json", USER_B, ORG,
+                              "someone@example.invalid's Organization")
+                    for ref in claude.cards(env):
+                        self.assertNotIn("example.invalid", ref.label)
+                    for row in _accounts.discover_config_dirs(env):
+                        self.assertEqual(row.organization_name, "")
+
+    def test_swap_merges_and_never_shows_email(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            with support.test_env(tmp) as env:
+                home = Path(tmp) / "home"
+                _two_accounts(home)
+                root = home / ".claude-swap-backup"
+                root.mkdir(parents=True)
+                (root / "sequence.json").write_text(json.dumps({"accounts": {
+                    "1": {"email": "one@example.invalid", "uuid": USER_B,
+                          "organizationUuid": ORG_B, "organizationName": "Globex"},
+                    "2": {"email": "two@example.invalid",
+                          "uuid": "55555555-5555-5555-5555-555555555555",
+                          "organizationUuid": ORG}}}))
+                refs = claude.cards(env)
+                self.assertEqual([r.label for r in refs],
+                                 ["Claude — Default", "Claude — work", "Claude — Slot 2"])
+                for ref in refs:
+                    self.assertNotIn("@", ref.label)
+                    self.assertNotIn("example.invalid", ref.label)
+                # The Swap-only card has no config dir, so no Spend.
+                _session_log(home / ".claude", "a", 100)
+                self.assertEqual(_spend_tokens(env, refs[2]), 0)
+                rows = json.dumps(_accounts.settings_rows(env))
+                self.assertNotIn("example.invalid", rows)
+
+    def test_single_install_unchanged(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            with support.test_env(tmp) as env:
+                home = Path(tmp) / "home"
+                _login(home / ".claude", "tok-a")
+                _identity(home / ".claude.json", USER, ORG, "Acme")
+                _session_log(home / ".claude", "a", 100)
+                _session_log(Path(tmp) / "config" / "claude", "x", 5)
+                refs = claude.cards(env)
+                self.assertEqual([(r.card_id, r.label) for r in refs],
+                                 [("claude", "Claude")])
+                self.assertEqual(_spend_tokens(env, refs[0]), 105)
+
+    def test_refresh_writes_back_to_its_dir(self):
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            with support.test_env(tmp) as env:
+                home = Path(tmp) / "home"
+                _login(home / ".claude", "tok-a")
+                _identity(home / ".claude.json", USER_B, ORG_B)
+                work = _login(home / ".claude-work", "tok-b", expires_at=1000)
+                _identity(home / ".claude-work" / ".claude.json", USER, ORG)
+                config = ClaudeFetch._stub(self, env)
+                assert isinstance(env.http, support.FakeHttp)
+                env.http.add_json("POST", config.refresh_url, {
+                    "access_token": "tok-b2", "expires_in": 3600})
+                ref = claude.cards(env)[1]
+                snap = claude.fetch(ref, env)
+                self.assertEqual(snap.metrics["session"].used, 42)
+                stored = json.loads(work.read_text())["claudeAiOauth"]
+                self.assertEqual(stored["accessToken"], "tok-b2")
+                kept = json.loads((home / ".claude" / ".credentials.json").read_text())
+                self.assertEqual(kept["claudeAiOauth"]["accessToken"], "tok-a")
+
+
+    def test_state_lists_dirs_for_settings(self):
+        from openusage_omarchy import catalog
+        from openusage_omarchy.daemon import publish as _publish
+
+        with clean_claude_env(), tempfile.TemporaryDirectory() as tmp:
+            with support.test_env(tmp) as env:
+                _two_accounts(Path(tmp) / "home")
+                rows = _accounts.settings_rows(env)
+                state = _publish.build(
+                    catalog.cached(), None, {}, "session-1", "0.0", support.NOW,
+                    [], None, claude_accounts=rows)
+                self.assertEqual(state["claudeAccounts"], [
+                    {"dir": "~/.claude", "label": "", "placeholder": "Default",
+                     "hidden": False},
+                    {"dir": "~/.claude-work", "label": "", "placeholder": "work",
+                     "hidden": False}])
 
 if __name__ == "__main__":
     unittest.main()

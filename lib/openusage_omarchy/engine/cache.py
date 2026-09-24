@@ -3,6 +3,9 @@
 One file per card under snapshots/, guarded by a per-card flock. A cache entry
 counts as fresh only when fetched during this login session and younger than
 the refresh interval. Holds no tokens: snapshots, identity hashes, offsets.
+
+A rate-limited card also gets a backoff file next to its snapshot, so a
+restarted daemon keeps honouring the wait instead of asking again at once.
 """
 
 from __future__ import annotations
@@ -93,3 +96,42 @@ def is_fresh(entry: Entry, session_id: str, now: dt.datetime) -> bool:
     if entry.session_id != session_id:
         return False
     return (now - entry.fetched_at).total_seconds() < REFRESH_INTERVAL_S
+
+
+@dataclass
+class Backoff:
+    until: dt.datetime
+    strikes: int
+    message: str
+
+
+def _backoff_path(snapshots_dir: Path, card_id: str) -> Path:
+    path = snapshot_path(snapshots_dir, card_id)
+    return path.with_name(path.stem + ".backoff.json")
+
+
+def read_backoff(snapshots_dir: Path, card_id: str) -> Backoff | None:
+    raw = atomic.read_json(_backoff_path(snapshots_dir, card_id))
+    if not isinstance(raw, dict):
+        return None
+    until = _parse_time(str(raw.get("until", "")))
+    if until is None:
+        return None
+    try:
+        strikes = max(1, int(raw.get("strikes", 1)))
+    except (TypeError, ValueError):
+        strikes = 1
+    return Backoff(until=until, strikes=strikes,
+                   message=str(raw.get("message", "")))
+
+
+def write_backoff(snapshots_dir: Path, card_id: str, backoff: Backoff) -> None:
+    atomic.write_json_atomic(_backoff_path(snapshots_dir, card_id), {
+        "until": backoff.until.isoformat(),
+        "strikes": backoff.strikes,
+        "message": backoff.message,
+    })
+
+
+def clear_backoff(snapshots_dir: Path, card_id: str) -> None:
+    _backoff_path(snapshots_dir, card_id).unlink(missing_ok=True)

@@ -37,7 +37,8 @@
       "updateWithOmarchy": false,
       "logLevel": "Info",
       "shortcut": "",
-      "codexFallbackModel": ""
+      "codexFallbackModel": "",
+      "claudeAccounts": {}
     }
   }
 }

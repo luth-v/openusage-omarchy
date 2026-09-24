@@ -161,15 +161,6 @@ def parse_retry_after(headers: dict[str, str] | None, now: dt.datetime) -> int |
     return max(0, int(math.ceil((moment - now).total_seconds())))
 
 
-def rate_limit_message(retry_after: int | None) -> str:
-    if retry_after is None:
-        return RATE_LIMITED_WAIT
-    import math
-
-    label = "now" if retry_after <= 0 else f"{int(math.ceil(retry_after / 60))}m"
-    return f"{RATE_LIMITED_WAIT} Retrying in ~{label}."
-
-
 def map_usage(
     body: bytes, oauth: _auth.OAuth, now: dt.datetime
 ) -> tuple[dict[str, model.Metric], str | None]:

@@ -8,6 +8,10 @@ A status-bar view of plan Quotas and Spend for coding Providers, ported to Omarc
 A coding product that reports Quotas or Spend. The set matches upstream: Claude, Codex, Cursor, Antigravity, Copilot, Devin, Grok, Ollama, OpenCode, OpenRouter, and Z.ai.
 _Avoid_: Agent, vendor, service
 
+**Account**:
+One signed-in identity within a Provider that has its own Quotas, shown as its own Provider card under a user-chosen label. A Claude organization is its own Account. The same identity signed in from two places is one Account, and its Spend is the sum of both. A Provider with one Account shows a single plain card.
+_Avoid_: Profile, login, org, seat
+
 **Quota**:
 A plan limit for one Window. A Quota is used or left.
 _Avoid_: Usage, allowance, credit

@@ -157,7 +157,7 @@ through CLI or Swap logins instead).
 | `GET /v1/usage`, `/v1/usage/:id` (legacy) | done | UI-oriented snapshots; values rows read as combined text; always-an-array single-id shape. |
 | Loopback-only 127.0.0.1:6736, fixed port | done | A taken port disables the feature for the session. |
 | GET/OPTIONS only, 16-connection cap, CORS `*` | done | Error codes `provider_not_found`, `not_found`, `method_not_allowed`, `server_busy`. |
-| Account emails in `displayName` | deviation | G2: the API serves "<Family> <n>" / family names only; emails appear solely in the local Dashboard label. |
+| Account emails in `displayName` | deviation | ADR 0006: emails are never shown — not on the Dashboard, the Bar strip, or the API. Claude cards read "Claude — <label>" (Settings label, config dir suffix, or organization); the API serves "<Family> <n>" / family names only. |
 
 ## CLI
 

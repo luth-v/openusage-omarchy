@@ -102,6 +102,32 @@ function _familyOf(cardId) {
     var cut = String(cardId).indexOf(":");
     return cut < 0 ? String(cardId) : String(cardId).slice(0, cut);
 }
+// "Claude — Work" -> "Work": the Account part of a card label.
+function accountLabel(label) {
+    var text = String(label || "");
+    var cut = text.indexOf(" — ");
+    return cut < 0 ? "" : text.slice(cut + 3).trim();
+}
+// Short Account prefixes for a family with several enabled cards
+// (ADR 0006): first letter, first two where initials collide.
+function accountPrefixes(labels) {
+    var initial = function(text, n) {
+        var head = String(text || "").slice(0, n);
+        return head.charAt(0).toUpperCase() + head.slice(1);
+    };
+    var counts = {};
+    var ids = Object.keys(labels);
+    for (var i = 0; i < ids.length; i++) {
+        var one = initial(labels[ids[i]], 1);
+        counts[one] = (counts[one] || 0) + 1;
+    }
+    var out = {};
+    for (var k = 0; k < ids.length; k++) {
+        var first = initial(labels[ids[k]], 1);
+        out[ids[k]] = counts[first] > 1 ? initial(labels[ids[k]], 2) : first;
+    }
+    return out;
+}
 function build(layout, catalog, state, display, fmt) {
     var empty = {groups: [], bars: [], isEmpty: true, accessibilityText: ""};
     if (!layout || !catalog || !state || !Array.isArray(state.cards) || !fmt)
@@ -115,6 +141,24 @@ function build(layout, catalog, state, display, fmt) {
     }
     var groups = [];
     var order = Array.isArray(layout.order) ? layout.order : [];
+    var perFamily = {};
+    for (i = 0; i < order.length; i++) {
+        var owned = layout.cards ? layout.cards[order[i]] : null;
+        if (!owned || !owned.enabled || !byCard[order[i]])
+            continue;
+        var fam = _familyOf(order[i]);
+        if (!perFamily[fam])
+            perFamily[fam] = {};
+        perFamily[fam][order[i]] = accountLabel(byCard[order[i]].label) || order[i];
+    }
+    var prefixes = {};
+    for (var f in perFamily) {
+        if (perFamily.hasOwnProperty(f) && Object.keys(perFamily[f]).length > 1) {
+            var picked = accountPrefixes(perFamily[f]);
+            for (var cid in picked)
+                prefixes[cid] = picked[cid];
+        }
+    }
     for (i = 0; i < order.length; i++) {
         var cardId = order[i];
         var slot = layout.cards ? layout.cards[cardId] : null;
@@ -152,11 +196,15 @@ function build(layout, catalog, state, display, fmt) {
                 continue;
             var def = _metricDef(providerDef, metricId);
             var label = trayLabel(def ? def.metricLabel || def.label : metricId);
-            resolved.push({id: cardId + "." + metricId, label: label, value: valueFor(family, metricId, metric, display, fmt), fraction: fractionFor(metric, display), isBounded: isBoundedFor(metric), hasData: true});
+            var shown = valueFor(family, metricId, metric, display, fmt);
+            if (prefixes[cardId])
+                shown = prefixes[cardId] + " " + shown;
+            resolved.push({id: cardId + "." + metricId, label: label, value: shown, fraction: fractionFor(metric, display), isBounded: isBoundedFor(metric), hasData: true});
         }
         if (resolved.length === 0)
             continue;
-        groups.push({cardId: cardId, family: family, displayName: String(providerDef.displayName || family), metrics: resolved});
+        var name = prefixes[cardId] && stateCard.label ? String(stateCard.label) : String(providerDef.displayName || family);
+        groups.push({cardId: cardId, family: family, displayName: name, accountPrefix: prefixes[cardId] || "", metrics: resolved});
     }
     if (groups.length === 0)
         return empty;

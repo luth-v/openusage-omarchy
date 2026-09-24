@@ -1,4 +1,4 @@
-"""Claude collector. File and environment logins, Swap multi-account.
+"""Claude collector. Config-dir Accounts, env token, Swap multi-account.
 
 Linux port notes: no macOS keychain read (Claude Code on Linux uses the
 credentials file); no Desktop token decryption (no AES in stdlib, no Linux
@@ -48,6 +48,9 @@ def _card_identity(card: model.CardRef, env: Env) -> _accounts.AccountCard | Non
 def has_credentials(env: Env) -> bool:
     if _auth.load_file(env) is not None:
         return True
+    for item in _accounts.discover_config_dirs(env):
+        if _auth.load_file(env, item.path) is not None:
+            return True
     import os
 
     if (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or "").strip():
@@ -84,35 +87,41 @@ def _load_vault(swap: _accounts.SwapAccount) -> _auth.Credential | None:
 
 def _candidates(env: Env, card: model.CardRef) -> list[_auth.Credential]:
     identity = _card_identity(card, env)
-    if identity is not None and identity.swap is not None:
-        return _swap_candidates(env, identity.swap)
-    stored: list[_auth.Credential] = []
-    file_cred = _auth.load_file(env)
-    if file_cred is not None:
-        stored.append(file_cred)
-    return _auth.with_environment_token(stored)
+    if identity is None or (not identity.dirs and identity.swap is None):
+        stored: list[_auth.Credential] = []
+        file_cred = _auth.load_file(env)
+        if file_cred is not None:
+            stored.append(file_cred)
+        return _auth.with_environment_token(stored)
+    # Each dir's own credentials file; a rotation writes back to that file.
+    found: list[_auth.Credential] = []
+    for directory in identity.dirs:
+        dir_cred = _auth.load_file(env, directory)
+        if dir_cred is not None:
+            found.append(dir_cred)
+    if identity.swap is not None:
+        found.extend(_swap_candidates(env, identity.swap))
+    ordered = _live_first(found)
+    if card.card_id == family:
+        return _auth.with_environment_token(ordered)
+    return ordered
+
+
+def _live_first(found: list[_auth.Credential]) -> list[_auth.Credential]:
+    live = [item for item in found if _auth.live_availability(item) == "available"]
+    rest = [item for item in found if _auth.live_availability(item) != "available"]
+    return live + rest
 
 
 def _swap_candidates(env: Env, swap: _accounts.SwapAccount) -> list[_auth.Credential]:
-    import os
-
     out: list[_auth.Credential] = []
-    default_key, _label, _anchor = _accounts.default_identity(env)
-    if default_key == swap.identity_key:
-        file_cred = _auth.load_file(env)
-        if file_cred is not None:
-            out.append(file_cred)
     session = _auth.load_file(env, swap.session_dir)
     if session is not None:
         out.append(session)
     vault = _load_vault(swap)
     if vault is not None:
         out.append(vault)
-    live = [item for item in out if _auth.live_availability(item) == "available"]
-    rest = [item for item in out if _auth.live_availability(item) != "available"]
-    ordered = live + rest
-    _ = os.environ
-    return ordered
+    return _live_first(out)
 
 
 def _refresh(
@@ -250,17 +259,21 @@ def attach_spend(card: model.CardRef, env: Env, snap: model.Snapshot,
     scan never trips the provider deadline. Pricing is cached-only here:
     the store revalidates in the background (see pricing_store.Store).
     """
-    # Multi-account installs share one home; only the bare card carries
-    # history so Total Spend never double-counts. Full per-org filtering
-    # stays future work.
-    if card.card_id != family:
-        return snap
+    # Each config dir belongs to one Account (ADR 0006), so every card scans
+    # only its own dirs and Total Spend never double-counts. Swap and
+    # Desktop cards without a dir carry no history; pi goes to the bare card.
     try:
+        roots = _accounts.spend_roots(env, _accounts.assemble(env)).get(card.card_id)
+        if not roots and card.card_id != family:
+            return snap
         pricing = _spend_ctx.load_pricing(env)
         stamp = _spend_ctx.since_ts(env)
-        native = _logs.scan(env.paths.home, env.paths.scan_dir, stamp, pricing)
-        extra = _pi.scan(env.paths.home, env.paths.scan_dir, "claude",
-                         stamp, pricing)
+        native = _logs.scan(env.paths.home, env.paths.scan_dir, stamp, pricing,
+                            roots=roots or [])
+        extra = None
+        if card.card_id == family:
+            extra = _pi.scan(env.paths.home, env.paths.scan_dir, "claude",
+                             stamp, pricing)
         merged = Accumulator.merged([native, extra])
         if merged is None:
             return snap
@@ -305,7 +318,8 @@ def _probe(
             raise model.CollectorError("auth", _auth.TOKEN_EXPIRED)
     if status == 429:
         retry = _mapper.parse_retry_after(headers or {}, now)
-        raise model.CollectorError("rate_limited", _mapper.rate_limit_message(retry))
+        raise model.CollectorError("rate_limited", _mapper.RATE_LIMITED_WAIT,
+                                   retry_after=retry)
     if not 200 <= status < 300:
         raise model.CollectorError(
             "status", f"Usage request failed (HTTP {status}). Try again later."

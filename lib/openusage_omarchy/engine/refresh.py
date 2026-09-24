@@ -7,6 +7,10 @@ the error attached. Late threads (past the deadline) can never publish:
 results are accepted only for the live batch generation, as upstream
 ``WidgetDataStore`` drops a cancelled provider's partial snapshot; the next
 scheduled batch retries.
+
+A rate-limited card is not asked again until its Retry-After passes (or a
+doubling wait when the upstream gave none): polling a 429 every interval
+only keeps the limit alive. A manual refresh still goes through.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from __future__ import annotations
 import concurrent.futures
 import datetime as dt
 import itertools
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -24,6 +29,12 @@ from . import cache
 
 #: Spend tile ids. A snapshot carrying any of these skips re-attachment.
 SPEND_IDS = frozenset({"today", "yesterday", "last30", "trend"})
+
+#: Wait after a 429 without Retry-After: doubles per strike, capped.
+BACKOFF_BASE_S = 15 * 60
+BACKOFF_MAX_S = 60 * 60
+#: Upper bound on an upstream Retry-After we are willing to honour.
+RETRY_AFTER_MAX_S = 6 * 60 * 60
 
 _counter = itertools.count(1)
 _lock = threading.Lock()
@@ -59,7 +70,11 @@ def _fetch_one(
     try:
         snapshot = catalog.check_snapshot(collector.fetch(card, env))  # type: ignore[attr-defined]
     except model.CollectorError as exc:
-        return _fallback(card, env, now, model.ErrorInfo(exc.category, exc.message))
+        message = exc.message
+        if exc.category == "rate_limited":
+            until = _record_backoff(env, card, now, exc)
+            message = rate_limit_message(exc.message, until, now)
+        return _fallback(card, env, now, model.ErrorInfo(exc.category, message))
     except Exception as exc:  # never let one card kill the batch
         log.get_logger("refresh").warning("%s fetch failed: %s", card.card_id, type(exc).__name__)
         return _fallback(card, env, now, model.ErrorInfo("internal", "Refresh failed"))
@@ -71,9 +86,51 @@ def _fetch_one(
         return _fallback(card, env, now, model.ErrorInfo("timeout", "Refresh timed out after 120s"))
     try:
         cache.write(env.paths.snapshots_dir, snapshot, session_id, now)
+        cache.clear_backoff(env.paths.snapshots_dir, card.card_id)
     except OSError as exc:
         log.get_logger("cache").warning("cache write failed for %s: %s", card.card_id, exc)
     return CardResult(card=card, snapshot=snapshot, error=None, from_cache=False, fetched_at=now)
+
+
+def rate_limit_message(base: str, until: dt.datetime, now: dt.datetime) -> str:
+    remaining = (until - now).total_seconds()
+    label = "now" if remaining <= 0 else f"{int(math.ceil(remaining / 60))}m"
+    return f"{base} Retrying in ~{label}."
+
+
+def _record_backoff(env: Env, card: model.CardRef, now: dt.datetime,
+                    exc: model.CollectorError) -> dt.datetime:
+    try:
+        previous = cache.read_backoff(env.paths.snapshots_dir, card.card_id)
+    except Exception:  # a broken backoff file reads as none
+        previous = None
+    strikes = previous.strikes + 1 if previous is not None else 1
+    if exc.retry_after is not None:
+        wait = min(max(exc.retry_after, 0), RETRY_AFTER_MAX_S)
+    else:
+        wait = min(BACKOFF_BASE_S * 2 ** (strikes - 1), BACKOFF_MAX_S)
+    until = now + dt.timedelta(seconds=wait)
+    try:
+        cache.write_backoff(env.paths.snapshots_dir, card.card_id,
+                            cache.Backoff(until, strikes, exc.message))
+    except OSError as exc_io:
+        log.get_logger("cache").warning("backoff write failed for %s: %s",
+                                        card.card_id, exc_io)
+    log.get_logger("refresh").info("%s rate limited; next try in %ds",
+                                   card.card_id, wait)
+    return until
+
+
+def _backing_off(env: Env, card: model.CardRef,
+                 now: dt.datetime) -> model.ErrorInfo | None:
+    try:
+        backoff = cache.read_backoff(env.paths.snapshots_dir, card.card_id)
+    except Exception:
+        return None
+    if backoff is None or now >= backoff.until:
+        return None
+    return model.ErrorInfo(
+        "rate_limited", rate_limit_message(backoff.message, backoff.until, now))
 
 
 def _fallback(
@@ -140,6 +197,10 @@ def refresh(
     pending: list[tuple[object, model.CardRef]] = []
     for collector, card in wanted:
         if not force:
+            waiting = _backing_off(env, card, started)
+            if waiting is not None:
+                batch.results.append(_fallback(card, env, started, waiting))
+                continue
             try:
                 entry = cache.read(env.paths.snapshots_dir, card, started)
             except Exception as exc:  # a broken cache reads as a miss

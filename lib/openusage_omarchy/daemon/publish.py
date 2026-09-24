@@ -115,12 +115,17 @@ def build(
     codex_options: list[dict] | None = None,
     update: dict | None = None,
     api_listening: bool = False,
+    claude_accounts: list[dict] | None = None,
 ) -> dict:
     by_card: dict[str, tuple[model.Snapshot | None, model.ErrorInfo | None]] = {}
+    # Labels come from the current card list, not the last-good snapshot, so
+    # a renamed Account shows its new label while its data is still stale.
+    labels: dict[str, str] = {}
     last_ended: str | None = None
     if batch is not None:
         for item in batch.results:
             by_card[item.card.card_id] = (item.snapshot, item.error)
+            labels[item.card.card_id] = item.card.label
         if batch.ended_at is not None:
             last_ended = batch.ended_at.isoformat()
     cards = []
@@ -135,7 +140,7 @@ def build(
         return {
             "cardId": card_id,
             "family": provider_id,
-            "label": snapshot.card.label if snapshot else display,
+            "label": labels.get(card_id) or (snapshot.card.label if snapshot else display),
             "detected": bool(detected.get(provider_id, False)),
             "plan": snapshot.plan if snapshot else None,
             "fetchedAt": fetched,
@@ -190,6 +195,8 @@ def build(
         },
         "pricing": {"source": source, "fetchedAt": fetched,
                     "codexFallbackOptions": list(codex_options or [])},
+        # Discovered Claude config dirs for Settings; never emails (ADR 0006).
+        "claudeAccounts": list(claude_accounts or []),
         "update": dict(update) if update is not None else {
             "latest": None,
             "channel": "stable",

@@ -121,6 +121,51 @@ class EngineTest(unittest.TestCase):
                 self.assertEqual(stub.calls, 1)
                 self.assertFalse(batch.results[0].from_cache)
 
+    def test_rate_limit_waits_for_retry_after(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            def limited(card, env):
+                raise model.CollectorError("rate_limited", "Blocked.",
+                                           retry_after=1800)
+
+            with support.test_env(tmp) as env:
+                cache.write(env.paths.snapshots_dir, snap(used=21), "old", support.NOW)
+                stub = StubCollector(limited)
+                first = engine.refresh([stub], env, "s").results[0]
+                assert first.error is not None
+                self.assertEqual(first.error.message, "Blocked. Retrying in ~30m.")
+            later = support.NOW + dt.timedelta(minutes=10)
+            with support.test_env(tmp, now=later) as env:
+                second = engine.refresh([stub], env, "s").results[0]
+                self.assertEqual(stub.calls, 1)  # no new request inside the wait
+                assert second.error is not None and second.snapshot is not None
+                self.assertEqual(second.error.message, "Blocked. Retrying in ~20m.")
+                self.assertEqual(second.snapshot.metrics["auto"].used, 21)
+                engine.refresh([stub], env, "s", force=True)
+                self.assertEqual(stub.calls, 2)  # manual refresh still asks
+            done = later + dt.timedelta(minutes=31)  # the forced 429 re-armed it
+            with support.test_env(tmp, now=done) as env:
+                ok = StubCollector()
+                self.assertIsNone(engine.refresh([ok], env, "s").results[0].error)
+                self.assertEqual(ok.calls, 1)
+                self.assertIsNone(cache.read_backoff(env.paths.snapshots_dir, "cursor"))
+
+    def test_rate_limit_without_retry_after_doubles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            def limited(card, env):
+                raise model.CollectorError("rate_limited", "Blocked.")
+
+            stub = StubCollector(limited)
+            waits = []
+            now = support.NOW
+            for _ in range(4):
+                with support.test_env(tmp, now=now) as env:
+                    engine.refresh([stub], env, "s")
+                    until = cache.read_backoff(env.paths.snapshots_dir, "cursor").until
+                waits.append(int((until - now).total_seconds() // 60))
+                now = until
+            self.assertEqual(waits, [15, 30, 60, 60])
+            self.assertEqual(stub.calls, 4)
+
     def test_wrong_account_cache_miss(self):
         with tempfile.TemporaryDirectory() as tmp, support.test_env(tmp) as env:
             stored = model.Snapshot(

@@ -267,7 +267,12 @@ function ensureCards(layout, catalog, cardIds) {
             var d = _cardDefaults(def);
             next.cards[cardId] = {enabled: false, metricOrder: d.metricOrder, disabled: d.disabled, alwaysVisible: d.alwaysVisible, stars: d.stars, expanded: false};
         }
-        var at = next.order.indexOf(family);
+        // New Accounts go right after their family's existing cards, so a
+        // second config dir never reorders what the user already arranged.
+        var at = -1;
+        for (var k = 0; k < next.order.length; k++)
+            if (familyOf(next.order[k]) === family)
+                at = k;
         if (at >= 0)
             next.order.splice(at + 1, 0, cardId);
         else
