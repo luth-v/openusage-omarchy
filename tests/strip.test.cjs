@@ -125,3 +125,8 @@ assert.ok(Math.abs(m.visualFraction(1) - 1) < 0.0001);
   assert.equal(m.accountLabel('Claude'), '');
 }
 console.log('Strip tests passed');
+// Bar text: one line per group, shared "%" kept once, Account prefix in front.
+assert.equal(m.inlineText('W', ['74%', '45%']), 'W 74·45%');
+assert.equal(m.inlineText('', ['74%', '45%']), '74·45%');
+assert.equal(m.inlineText('', ['27%']), '27%');
+assert.equal(m.inlineText('', ['40%', '$42']), '40%·$42');

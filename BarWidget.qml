@@ -174,7 +174,7 @@ Ui.BarWidget {
             delegate: Row {
                 required property var modelData
                 spacing: Style.space(4)
-                height: Math.max(mark.height, values.height)
+                height: Math.max(mark.height, label.height)
                 Q.ProviderMark {
                     id: mark
                     providerId: modelData.family
@@ -184,32 +184,13 @@ Ui.BarWidget {
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 Text {
-                    id: single
-                    visible: modelData.metrics.length <= 1
-                    text: modelData.metrics.length > 0 ? modelData.metrics[0].value : ""
+                    id: label
+                    text: modelData.text
                     color: button.foreground
                     font.family: button.fontFamily
                     font.pixelSize: Style.font.body
                     font.bold: true
                     anchors.verticalCenter: parent.verticalCenter
-                }
-                Column {
-                    id: values
-                    visible: modelData.metrics.length > 1
-                    spacing: -2
-                    anchors.verticalCenter: parent.verticalCenter
-                    Repeater {
-                        model: modelData.metrics
-                        delegate: Text {
-                            required property var modelData
-                            text: modelData.value
-                            color: button.foreground
-                            font.family: button.fontFamily
-                            font.pixelSize: Style.font.bodySmall
-                            font.weight: 600
-                            anchors.right: parent.right
-                        }
-                    }
                 }
             }
         }

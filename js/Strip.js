@@ -189,6 +189,7 @@ function build(layout, catalog, state, display, fmt) {
             return rx - ry;
         });
         var resolved = [];
+        var raws = [];
         for (var s = 0; s < stars.length; s++) {
             var metricId = stars[s];
             var metric = metrics[metricId];
@@ -197,6 +198,7 @@ function build(layout, catalog, state, display, fmt) {
             var def = _metricDef(providerDef, metricId);
             var label = trayLabel(def ? def.metricLabel || def.label : metricId);
             var shown = valueFor(family, metricId, metric, display, fmt);
+            raws.push(shown);
             if (prefixes[cardId])
                 shown = prefixes[cardId] + " " + shown;
             resolved.push({id: cardId + "." + metricId, label: label, value: shown, fraction: fractionFor(metric, display), isBounded: isBoundedFor(metric), hasData: true});
@@ -204,7 +206,7 @@ function build(layout, catalog, state, display, fmt) {
         if (resolved.length === 0)
             continue;
         var name = prefixes[cardId] && stateCard.label ? String(stateCard.label) : String(providerDef.displayName || family);
-        groups.push({cardId: cardId, family: family, displayName: name, accountPrefix: prefixes[cardId] || "", metrics: resolved});
+        groups.push({cardId: cardId, family: family, displayName: name, accountPrefix: prefixes[cardId] || "", metrics: resolved, text: inlineText(prefixes[cardId], raws)});
     }
     if (groups.length === 0)
         return empty;
@@ -220,6 +222,13 @@ function build(layout, catalog, state, display, fmt) {
         return g.displayName + " " + g.metrics.map(function(m) { return m.label + " " + m.value; }).join(", ");
     }).join("; ");
     return {groups: groups, bars: bars, isEmpty: false, accessibilityText: text};
+}
+// One-line bar text: ["74%", "45%"] + "W" -> "W 74·45%"; a shared "%" is kept once at the end.
+function inlineText(prefix, raws) {
+    var allPercent = raws.length > 1 && raws.every(function(v) { return /^\d+(\.\d+)?%$/.test(v); });
+    var parts = allPercent ? raws.map(function(v, i) { return i < raws.length - 1 ? v.slice(0, -1) : v; }) : raws;
+    var joined = parts.join("·");
+    return prefix ? prefix + " " + joined : joined;
 }
 function visualFraction(fraction) {
     var f = Number(fraction);
