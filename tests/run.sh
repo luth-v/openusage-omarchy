@@ -3,7 +3,7 @@
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
-for f in bin/* tests/*.sh; do
+for f in bin/* dev/*.sh tests/*.sh; do
   [ -e "$f" ] || continue
   bash -n "$f"
 done

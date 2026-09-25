@@ -41,8 +41,10 @@ already exists:
 ```
 
 Position the widget with `omarchy bar move luth-v.openusage-omarchy --after
-<neighbour>`. Code and settings hot-reload; nothing under
-`/usr/share/omarchy/` is modified.
+<neighbour>`. Settings hot-reload; nothing under `/usr/share/omarchy/` is
+modified. Code changes need a shell restart, because hot reload keeps
+serving stale nested QML. `dev/install.sh` copies, validates, and restarts
+in one step.
 
 ## Use
 
