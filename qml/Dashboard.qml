@@ -33,7 +33,11 @@ Ui.Panel {
     readonly property bool compact: root.hostWidget ? root.hostWidget.setting("density", "Default") === "Compact" : false
     readonly property bool reduceMotion: root.hostWidget ? !!root.hostWidget.setting("reduceAnimations", false) : false
     readonly property bool showTotalSpend: root.hostWidget ? root.hostWidget.setting("showTotalSpend", true) !== false : true
+    // Two clocks: `now` steps once per wall-clock minute and drives the
+    // section models (their labels are minute-granular); `clock` ticks every
+    // second for the footer's final-minute seconds countdown only.
     property var now: new Date()
+    property var clock: new Date()
     property string themeColors: ""
     readonly property color warningColor: {
         var yellow = Theme.parseYellow(root.themeColors);
@@ -44,7 +48,7 @@ Ui.Panel {
         timeFormat: root.timeFormat, alwaysShowPacing: root.alwaysShowPacing
     }, {fmt: Format, pace: Pace, layout: Layout})
     readonly property var banner: Dashboard.updateBannerModel(root.feed)
-    readonly property var footer: Dashboard.footerModel(root.feed, root.now)
+    readonly property var footer: Dashboard.footerModel(root.feed, root.clock)
     readonly property bool spendOn: Dashboard.spendVisible(root.layout, root.showTotalSpend, root.catalog)
     readonly property var spendProviders: Dashboard.spendProviders(root.layout, root.catalog)
     readonly property string spendPeriod: root.layout && root.layout.spend && root.layout.spend.period ? root.layout.spend.period : "today"
@@ -158,7 +162,12 @@ Ui.Panel {
         interval: 1000
         repeat: true
         running: root.opened
-        onTriggered: root.now = new Date()
+        onTriggered: {
+            var d = new Date();
+            root.clock = d;
+            if (Math.floor(d.getTime() / 60000) !== Math.floor(root.now.getTime() / 60000))
+                root.now = d;
+        }
     }
     PartyMode {
         id: partyMode
@@ -183,6 +192,7 @@ Ui.Panel {
     onOpenedChanged: {
         if (root.opened) {
             root.now = new Date();
+            root.clock = root.now;
             root.dismissMenu();
             root.aboutOpen = false;
         } else {
