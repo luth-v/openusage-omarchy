@@ -2,9 +2,11 @@ import QtQuick
 import qs.Commons
 import "../js/Spend.js" as Spend
 import "../js/Dashboard.js" as Dashboard
+import qs.Ui as Ui
 
-// Usage Trend: compact day-by-day token sparkline. Clicking expands the
-// larger chart with the peak (or hovered day) readout, range, and source.
+// Usage Trend: compact day-by-day token sparkline. Hovering a day shows its
+// readout; clicking expands the larger chart with the peak (or hovered day)
+// readout, range, and source.
 Item {
     id: root
     property string title: ""
@@ -12,6 +14,7 @@ Item {
     property string note: ""
     property bool open: false
     property var activeIndex: null
+    property var stripIndex: null
     readonly property var bars: Spend.trendBars(root.points)
     readonly property var summary: Dashboard.trendSummary(root.points)
     readonly property string readout: Dashboard.trendReadout(root.points, root.activeIndex)
@@ -22,6 +25,14 @@ Item {
     width: parent ? parent.width : 0
     function barHeight(fraction, height) {
         return fraction <= 0 ? 2 : Math.max(height * fraction, 2);
+    }
+    // One hover area per chart: nested per-bar MouseAreas lose hover to
+    // whichever sibling area sits above them, so resolve the day from x.
+    function indexAt(x, width) {
+        var n = root.bars.length;
+        if (n === 0 || width <= 0 || x < 0 || x >= width)
+            return null;
+        return Math.min(n - 1, Math.floor(x / width * n));
     }
     Column {
         id: layout
@@ -63,14 +74,28 @@ Item {
                             anchors.bottom: parent.bottom
                             radius: 1
                             color: Color.accent
+                            opacity: root.stripIndex === null || root.stripIndex === index ? 1 : 0.35
                         }
                     }
                 }
             }
             MouseArea {
                 anchors.fill: parent
+                hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
                 onClicked: root.open = !root.open
+                onPositionChanged: mouse => {
+                    var p = mapToItem(strip, mouse.x, mouse.y);
+                    root.stripIndex = p.y >= 0 && p.y <= strip.height ? root.indexAt(p.x, strip.width) : null;
+                }
+                onContainsMouseChanged: {
+                    if (!containsMouse)
+                        root.stripIndex = null;
+                }
+                Ui.PanelToolTip {
+                    visible: parent.containsMouse && root.stripIndex !== null
+                    text: Dashboard.trendReadout(root.points, root.stripIndex)
+                }
             }
         }
         Column {
@@ -122,15 +147,6 @@ Item {
                                 color: Color.accent
                                 opacity: root.activeIndex === null || root.activeIndex === index ? 1 : 0.35
                             }
-                            MouseArea {
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                acceptedButtons: Qt.NoButton
-                                onContainsMouseChanged: {
-                                    if (containsMouse)
-                                        root.activeIndex = index;
-                                }
-                            }
                         }
                     }
                 }
@@ -138,6 +154,7 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     acceptedButtons: Qt.NoButton
+                    onPositionChanged: mouse => root.activeIndex = root.indexAt(mouse.x, width)
                     onContainsMouseChanged: {
                         if (!containsMouse)
                             root.activeIndex = null;
