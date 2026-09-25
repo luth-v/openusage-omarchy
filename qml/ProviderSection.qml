@@ -297,8 +297,10 @@ Item {
                 width: parent.width
                 Repeater {
                     id: rowsRep
-                    model: root.rows
+                    model: root.rows.length
                     MetricRow {
+                        required property int index
+                        readonly property var modelData: root.rows[index] || null
                         width: rowsColumn.width
                         row: modelData
                         cardId: root.section ? root.section.cardId : ""
@@ -307,8 +309,8 @@ Item {
                         partyFill: root.partyFill
                         claimResult: root.claimResult
                         menuLayer: root.menuLayer
-                        dropHover: root.hoverMetricId === modelData.metricId
-                        dimmed: root.dragMetricId !== "" && root.dragMetricId === modelData.metricId
+                        dropHover: !!modelData && root.hoverMetricId === modelData.metricId
+                        dimmed: !!modelData && root.dragMetricId !== "" && root.dragMetricId === modelData.metricId
                         onToggleDisplay: root.toggleDisplay(modelData.metricId)
                         onToggleReset: root.toggleReset(modelData.metricId)
                         onRowMenu: function(r, c, x, y) { root.rowMenu(r, c, x, y); }
@@ -339,9 +341,11 @@ Item {
             spacing: Style.space(12)
             bottomPadding: Style.space(6)
             Repeater {
-                model: (root.section && root.section.links) ? root.section.links.slice(0, 3) : []
+                model: (root.section && root.section.links) ? Math.min(3, root.section.links.length) : 0
                 Text {
-                    text: modelData.label
+                    required property int index
+                    readonly property var modelData: (root.section && root.section.links && root.section.links[index]) || ({})
+                    text: modelData.label || ""
                     color: Qt.alpha(Color.popups.text, 0.6)
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall

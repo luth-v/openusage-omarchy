@@ -268,11 +268,13 @@ Ui.Panel {
                     }
                     Repeater {
                         id: sectionsRep
-                        model: root.model.sections
+                        // Count model: the 1 s clock rebuilds the sections array, and a
+                        // new array would recreate every delegate (dropping hover state).
+                        model: root.model.sections.length
                         delegate: Column {
-                            required property var modelData
                             required property int index
-                            property string cardId: modelData.cardId
+                            readonly property var modelData: root.model.sections[index] || null
+                            property string cardId: modelData ? modelData.cardId : ""
                             width: contentColumn.width
                             height: implicitHeight
                             opacity: root.dragSectionId === cardId ? 0.5 : 1
@@ -286,12 +288,12 @@ Ui.Panel {
                             ProviderSection {
                                 width: parent.width
                                 section: modelData
-                                claimResult: modelData.lastClaim
+                                claimResult: modelData ? modelData.lastClaim : null
                                 warningColor: root.warningColor
                                 compact: root.compact
                                 reduceMotion: root.reduceMotion
                                 partyFill: partyMode.current
-                                dropHover: root.hoverSectionId === modelData.cardId
+                                dropHover: root.hoverSectionId === cardId
                                 menuLayer: menuHost
                                 onToggleCollapse: root.service ? root.service.dispatch({type: "setExpanded", cardId: modelData.cardId, expanded: !modelData.isExpanded}) : undefined
                                 onToggleDisplay: root.hostWidget ? root.hostWidget.toggleDisplay() : undefined

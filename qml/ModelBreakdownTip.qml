@@ -26,9 +26,10 @@ Item {
             width: parent.width
             height: implicitHeight
             Repeater {
-                model: root.breakdown ? root.breakdown.models : []
+                model: root.breakdown && root.breakdown.models ? root.breakdown.models.length : 0
                 delegate: Column {
-                    required property var modelData
+                    required property int index
+                    readonly property var modelData: (root.breakdown && root.breakdown.models && root.breakdown.models[index]) || ({})
                     width: parent.width
                     height: implicitHeight
                     spacing: 2

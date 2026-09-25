@@ -21,6 +21,7 @@ Item {
     property bool nothingToReset: false
     property real clickMs: 0
     property string hovered: ""
+    readonly property var entries: root.visibleEntries()
     function visibleEntries() {
         var list = root.resets && root.resets.entries ? root.resets.entries : [];
         return list.filter(function(e) { return root.claimed.indexOf(e.iso) < 0; });
@@ -138,10 +139,10 @@ Item {
             }
         }
         Repeater {
-            model: root.visibleEntries()
+            model: root.entries.length
             delegate: Column {
-                required property var modelData
                 required property int index
+                readonly property var modelData: root.entries[index] || ({})
                 width: layout.width
                 height: implicitHeight
                 spacing: Style.space(4)

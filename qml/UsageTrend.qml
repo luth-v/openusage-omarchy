@@ -54,9 +54,10 @@ Item {
                     spacing: 1
                     anchors.verticalCenter: parent.verticalCenter
                     Repeater {
-                        model: root.bars
+                        model: root.bars.length
                         delegate: Rectangle {
-                            required property var modelData
+                            required property int index
+                            readonly property var modelData: root.bars[index] || ({fraction: 0})
                             width: Math.max(2, (strip.width - (root.bars.length - 1)) / Math.max(1, root.bars.length))
                             height: root.barHeight(modelData.fraction, root.stripHeight)
                             anchors.bottom: parent.bottom
@@ -107,10 +108,10 @@ Item {
                     anchors.fill: parent
                     spacing: 2
                     Repeater {
-                        model: root.bars
+                        model: root.bars.length
                         delegate: Item {
-                            required property var modelData
                             required property int index
+                            readonly property var modelData: root.bars[index] || ({fraction: 0})
                             width: (detailRow.width - (root.bars.length - 1) * 2) / Math.max(1, root.bars.length)
                             height: detailRow.height
                             Rectangle {
